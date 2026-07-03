@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# 환경/비밀값
+.env
+*.pem
+
+# 데이터/모델/산출물 (git에 올리지 않음)
+data/
+models/
+outputs/
+*.xlsx
+*.gguf
+*.onnx
+
+# 편집기/OS
+.vscode/
+.idea/
+.DS_Store

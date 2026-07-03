@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+from collections.abc import Callable
 
 import psycopg
 
@@ -19,14 +20,18 @@ def _migration_files() -> list[Path]:
     return sorted((PROJECT_ROOT / "db" / "migrations").glob("*.sql"))
 
 
-def main() -> int:
-    settings = get_settings()
-    dsn = _psycopg_dsn(settings.database_url)
-    migrations = _migration_files()
+def apply_migrations(dsn: str, migrations_dir: Path) -> list[str]:
+    return _apply_migrations(dsn, migrations_dir, log=None)
 
-    if not migrations:
-        print("no migration files found")
-        return 0
+
+def _apply_migrations(
+    dsn: str,
+    migrations_dir: Path,
+    *,
+    log: Callable[[str], None] | None,
+) -> list[str]:
+    migrations = sorted(migrations_dir.glob("*.sql"))
+    applied_now: list[str] = []
 
     with psycopg.connect(dsn, autocommit=True) as connection:
         connection.execute(
@@ -47,7 +52,8 @@ def main() -> int:
         for migration in migrations:
             filename = migration.name
             if filename in applied:
-                print(f"skip {filename}")
+                if log is not None:
+                    log(f"skip {filename}")
                 continue
 
             sql = migration.read_text(encoding="utf-8")
@@ -57,8 +63,23 @@ def main() -> int:
                     "INSERT INTO schema_migrations (filename, applied_at) VALUES (%s, now())",
                     (filename,),
                 )
-            print(f"apply {filename}")
+            applied_now.append(filename)
+            if log is not None:
+                log(f"apply {filename}")
 
+    return applied_now
+
+
+def main() -> int:
+    settings = get_settings()
+    dsn = _psycopg_dsn(settings.database_url)
+    migrations = _migration_files()
+
+    if not migrations:
+        print("no migration files found")
+        return 0
+
+    _apply_migrations(dsn, PROJECT_ROOT / "db" / "migrations", log=print)
     return 0
 
 

@@ -288,15 +288,21 @@ class PostgresIngestRepository:
                 p.published_year,
                 p.paper_embedding::text AS embedding,
                 COALESCE(
-                    array_agg(k.keyword) FILTER (WHERE k.keyword IS NOT NULL),
+                    pk.keywords,
                     ARRAY[]::text[]
                 ) AS keywords
             FROM papers p
-            LEFT JOIN paper_keywords pk ON pk.paper_id = p.paper_id
-            LEFT JOIN keywords k ON k.keyword_id = pk.keyword_id
+            LEFT JOIN (
+                SELECT
+                    paper_keywords.paper_id,
+                    array_agg(keywords.keyword) FILTER (WHERE keywords.keyword IS NOT NULL)
+                        AS keywords
+                FROM paper_keywords
+                JOIN keywords ON keywords.keyword_id = paper_keywords.keyword_id
+                GROUP BY paper_keywords.paper_id
+            ) pk ON pk.paper_id = p.paper_id
             WHERE p.paper_id <> :paper_id
               AND p.paper_embedding IS NOT NULL
-            GROUP BY p.paper_id, p.published_year, p.paper_embedding
             """
         )
         with self.engine.begin() as connection:

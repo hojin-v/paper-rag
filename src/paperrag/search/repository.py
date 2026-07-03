@@ -269,10 +269,26 @@ class PostgresSearchRepository:
     def top_relation(self, paper_id: int) -> tuple[int, float, str] | None:
         statement = text(
             """
-            SELECT related_paper_id, relation_score, relation_reason
-            FROM paper_relations
-            WHERE source_paper_id = :paper_id
-            ORDER BY relation_score DESC, related_paper_id ASC
+            WITH relation_candidates AS (
+                SELECT
+                    related_paper_id AS peer_paper_id,
+                    relation_score,
+                    relation_reason
+                FROM paper_relations
+                WHERE source_paper_id = :paper_id
+
+                UNION ALL
+
+                SELECT
+                    source_paper_id AS peer_paper_id,
+                    relation_score,
+                    relation_reason
+                FROM paper_relations
+                WHERE related_paper_id = :paper_id
+            )
+            SELECT peer_paper_id, relation_score, relation_reason
+            FROM relation_candidates
+            ORDER BY relation_score DESC, peer_paper_id ASC
             LIMIT 1
             """
         )
@@ -281,7 +297,7 @@ class PostgresSearchRepository:
         if row is None:
             return None
         return (
-            int(row["related_paper_id"]),
+            int(row["peer_paper_id"]),
             float(row["relation_score"]),
             str(row["relation_reason"] or ""),
         )
@@ -764,4 +780,3 @@ def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
     if norm_a == 0.0 or norm_b == 0.0:
         return 0.0
     return dot / (norm_a * norm_b)
-

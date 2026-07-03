@@ -1,0 +1,91 @@
+services:
+  postgres:
+    # PostgreSQL 16 with pgvector for relational data and embeddings.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: paperrag
+      POSTGRES_PASSWORD: paperrag
+      POSTGRES_DB: paperrag
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperrag -d paperrag"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    # Redis broker for future Celery ingestion workers.
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  ollama:
+    # Local LLM runtime for Qwen and related on-premises models.
+    image: ollama/ollama
+    volumes:
+      - ollama_models:/root/.ollama
+    ports:
+      - "11434:11434"
+
+  api:
+    # FastAPI search service.
+    build: .
+    command: uvicorn paperrag.search.api:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      PAPERRAG_DATABASE_URL: postgresql+psycopg://paperrag:paperrag@postgres:5432/paperrag
+      PAPERRAG_OLLAMA_BASE_URL: http://ollama:11434
+      PAPERRAG_REDIS_URL: redis://redis:6379/0
+      PAPERRAG_CELERY_BROKER_URL: redis://redis:6379/0
+      PAPERRAG_CELERY_RESULT_BACKEND: redis://redis:6379/1
+
+  worker:
+    # Celery worker for ingestion and enrichment jobs.
+    build: .
+    command: celery -A paperrag.worker.app worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      PAPERRAG_DATABASE_URL: postgresql+psycopg://paperrag:paperrag@postgres:5432/paperrag
+      PAPERRAG_OLLAMA_BASE_URL: http://ollama:11434
+      PAPERRAG_REDIS_URL: redis://redis:6379/0
+      PAPERRAG_CELERY_BROKER_URL: redis://redis:6379/0
+      PAPERRAG_CELERY_RESULT_BACKEND: redis://redis:6379/1
+    profiles:
+      - worker
+
+  ui:
+    # Streamlit UI for interactive search and review.
+    build: .
+    command: streamlit run src/paperrag/ui/app.py --server.address 0.0.0.0 --server.port 8501
+    ports:
+      - "8501:8501"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      PAPERRAG_DATABASE_URL: postgresql+psycopg://paperrag:paperrag@postgres:5432/paperrag
+      PAPERRAG_OLLAMA_BASE_URL: http://ollama:11434
+      PAPERRAG_REDIS_URL: redis://redis:6379/0
+    profiles:
+      - ui
+
+volumes:
+  pgdata:
+  ollama_models:

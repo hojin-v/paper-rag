@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     embed_base_url: str = "http://localhost:8100"
     embed_dim: int = 1024
     embed_timeout_seconds: int = 60
+    embed_encoder: str = "hash"
+    embed_model_name: str = "BAAI/bge-m3"
     data_dir: Path = Path("./data")
     result_dir: Path = Path("./outputs")
     redis_url: str = "redis://localhost:6379/0"

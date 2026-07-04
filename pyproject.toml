@@ -33,6 +33,9 @@ ingest-full = [
     "paddleocr",
     "kiwipiepy",
 ]
+embed = [
+    "sentence-transformers",
+]
 worker = [
     "celery[redis]",
 ]

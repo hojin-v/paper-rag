@@ -30,6 +30,17 @@ services:
     ports:
       - "11434:11434"
 
+  embedder:
+    # HTTP embedding server for BGE-M3 or deterministic offline hash vectors.
+    build: .
+    command: uvicorn paperrag.embed.server:app --host 0.0.0.0 --port 8100
+    ports:
+      - "8100:8100"
+    env_file:
+      - .env
+    environment:
+      PAPERRAG_EMBED_ENCODER: hash
+
   api:
     # FastAPI search service.
     build: .

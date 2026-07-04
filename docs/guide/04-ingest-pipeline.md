@@ -151,7 +151,9 @@ docker compose exec postgres psql -U paperrag -d paperrag -c "SELECT paper_id, t
 | `--skip-llm` | 사용 | Ollama 없이 passthrough 정제와 단순 키워드 후보 사용 |
 | `--skip-llm` | 미사용 | Ollama JSON 응답으로 단락 정제·요약·키워드 추출 |
 | `--backend simple` | 기본 | PyMuPDF 텍스트 블록 기반 폴백 |
-| `--backend docling` | 선택 | Docling 설치 환경에서 레이아웃 분석 |
+| `--backend docling` | 선택 | Docling 설치 환경에서 섹션 헤더와 표(`table` 블록) 추출 지원 |
+
+> 주의: Docling backend는 최초 실행 시 모델을 `~/.cache`에 다운로드할 수 있으므로 운영 서버의 캐시 경로와 권한을 미리 확인한다.
 
 ```bash
 python -m paperrag.ingest --help

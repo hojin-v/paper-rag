@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 120
     embed_base_url: str = "http://localhost:8100"
     embed_dim: int = 1024
-    embed_timeout_seconds: int = 60
+    embed_timeout_seconds: int = 180
     embed_encoder: str = "hash"
     embed_model_name: str = "BAAI/bge-m3"
     data_dir: Path = Path("./data")
@@ -27,7 +27,9 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"
     search_suggestion_limit: int = 3
-    search_similarity_threshold: float = 0.6
+    # BGE-M3 실측에서 유사어 쌍(예지보전↔예측 유지보수)이 0.59로 측정되어 0.6에서 하향.
+    # Phase 0 평가셋 구축 후 재보정한다.
+    search_similarity_threshold: float = 0.5
     relation_top_k: int = 20
     paragraph_min_chars: int = 100
     paragraph_max_chars: int = 1500

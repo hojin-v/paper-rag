@@ -31,6 +31,13 @@ def get_cached_encoder() -> Encoder:
     return get_encoder(get_settings())
 
 
+@app.on_event("startup")
+async def warmup_encoder() -> None:
+    # st 인코더는 첫 encode에서 모델을 로드하므로 기동 시점에 미리 예열한다
+    # (예열 없이는 첫 /embed 요청이 클라이언트 타임아웃을 초과할 수 있음)
+    get_cached_encoder().encode(["warmup"])
+
+
 async def get_encoder_dependency() -> Encoder:
     return get_cached_encoder()
 

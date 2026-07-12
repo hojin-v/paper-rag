@@ -69,6 +69,8 @@ class SimplePyMuPDFBackend:
                             block_type=block_type,
                             text=text,
                             order=order,
+                            bbox=_coerce_bbox(block.get("bbox")),
+                            ocr_engine="pymupdf-text",
                         )
                     )
                     order += 1
@@ -110,3 +112,13 @@ class SimplePyMuPDFBackend:
             if text:
                 lines.append(text)
         return "\n".join(lines)
+
+
+def _coerce_bbox(value: object) -> tuple[float, float, float, float] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    try:
+        values = tuple(float(item) for item in value)
+    except (TypeError, ValueError):
+        return None
+    return (values[0], values[1], values[2], values[3])

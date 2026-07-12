@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="760" viewBox="0 0 1600 760" role="img" aria-labelledby="title desc">
+  <title id="title">Paper RAG의 두 사용자 흐름</title>
+  <desc id="desc">논문 등록자는 분석 영역을 검수하고 검색 사용자는 결과 안내와 엑셀을 받는다</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#f4f9ff"/><stop offset="1" stop-color="#e6f1fb"/></linearGradient>
+    <marker id="a" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0 0L12 6 0 12Z" fill="#4b78a8"/></marker>
+    <filter id="s"><feDropShadow dx="0" dy="5" stdDeviation="7" flood-opacity=".16"/></filter>
+    <style>.t{font:700 36px system-ui,sans-serif;fill:#17324d}.h{font:700 25px system-ui,sans-serif;fill:#fff}.x{font:600 20px system-ui,sans-serif;fill:#244c70}.n{font:500 17px system-ui,sans-serif;fill:#54738e}.line{stroke:#4b78a8;stroke-width:4;fill:none;marker-end:url(#a)}</style>
+  </defs>
+  <rect width="1600" height="760" rx="28" fill="url(#bg)"/>
+  <text x="70" y="70" class="t">하나의 시스템, 두 개의 명확한 경험</text>
+
+  <g filter="url(#s)">
+    <rect x="70" y="120" width="1460" height="240" rx="28" fill="#fff"/>
+    <rect x="70" y="120" width="250" height="240" rx="28" fill="#236fd1"/>
+    <text x="195" y="210" text-anchor="middle" class="h">논문 등록자</text>
+    <text x="195" y="250" text-anchor="middle" class="h">분석을 검수</text>
+    <text x="195" y="300" text-anchor="middle" style="font:500 17px system-ui,sans-serif;fill:#dcecff">추출 과정이 보인다</text>
+
+    <g><rect x="380" y="175" width="210" height="120" rx="18" fill="#eaf3ff"/><text x="485" y="225" text-anchor="middle" class="x">PDF 업로드</text><text x="485" y="260" text-anchor="middle" class="n">전 페이지 이미지 변환</text></g>
+    <g><rect x="685" y="175" width="210" height="120" rx="18" fill="#eaf3ff"/><text x="790" y="225" text-anchor="middle" class="x">영역 클릭</text><text x="790" y="260" text-anchor="middle" class="n">레이아웃 · OCR 확인</text></g>
+    <g><rect x="990" y="175" width="210" height="120" rx="18" fill="#eaf3ff"/><text x="1095" y="225" text-anchor="middle" class="x">교정 · 승인</text><text x="1095" y="260" text-anchor="middle" class="n">유형 · 좌표 · 텍스트</text></g>
+    <g><rect x="1295" y="175" width="170" height="120" rx="18" fill="#dff8ea"/><text x="1380" y="225" text-anchor="middle" class="x">적재</text><text x="1380" y="260" text-anchor="middle" class="n">DB · Vector</text></g>
+    <path d="M590 235H675" class="line"/><path d="M895 235H980" class="line"/><path d="M1200 235H1285" class="line"/>
+
+    <rect x="70" y="410" width="1460" height="240" rx="28" fill="#fff"/>
+    <rect x="70" y="410" width="250" height="240" rx="28" fill="#14866d"/>
+    <text x="195" y="500" text-anchor="middle" class="h">논문 검색자</text>
+    <text x="195" y="540" text-anchor="middle" class="h">결과를 활용</text>
+    <text x="195" y="590" text-anchor="middle" style="font:500 17px system-ui,sans-serif;fill:#d9fff3">화면은 간단, 자료는 상세</text>
+
+    <g><rect x="380" y="465" width="210" height="120" rx="18" fill="#e7f8f3"/><text x="485" y="515" text-anchor="middle" class="x">자연어 질의</text><text x="485" y="550" text-anchor="middle" class="n">핵심 키워드 해석</text></g>
+    <g><rect x="685" y="465" width="210" height="120" rx="18" fill="#e7f8f3"/><text x="790" y="515" text-anchor="middle" class="x">정확 매칭</text><text x="790" y="550" text-anchor="middle" class="n">없으면 유사 제안</text></g>
+    <g><rect x="990" y="465" width="210" height="120" rx="18" fill="#e7f8f3"/><text x="1095" y="515" text-anchor="middle" class="x">결과 안내</text><text x="1095" y="550" text-anchor="middle" class="n">대표 · 연관 · 선정 이유</text></g>
+    <g><rect x="1295" y="465" width="170" height="120" rx="18" fill="#fff0d8"/><text x="1380" y="515" text-anchor="middle" class="x">엑셀</text><text x="1380" y="550" text-anchor="middle" class="n">6개 시트</text></g>
+    <path d="M590 525H675" class="line"/><path d="M895 525H980" class="line"/><path d="M1200 525H1285" class="line"/>
+  </g>
+</svg>

@@ -29,7 +29,9 @@ class PaperSummary(BaseModel):
 class SearchMatched(BaseModel):
     status: Literal["matched"] = "matched"
     matched_keyword: str
+    query_keywords: list[str] = Field(default_factory=list)
     match_type: Literal["exact", "selected"]
+    explanation: str = ""
     result_id: str
     primary_paper: PaperSummary
     related_paper: PaperSummary | None = None
@@ -38,6 +40,8 @@ class SearchMatched(BaseModel):
 class SearchSuggest(BaseModel):
     status: Literal["suggest"] = "suggest"
     session_id: str
+    query_keywords: list[str] = Field(default_factory=list)
+    explanation: str = ""
     candidates: list[KeywordCandidate] = Field(default_factory=list)
 
 
@@ -52,6 +56,7 @@ class PaperInfo(BaseModel):
     authors: str = ""
     published_year: int | None = None
     journal: str | None = None
+    abstract: str = ""
     abstract_summary: str | None = None
     full_text_link: str | None = None
     keywords: list[str] = Field(default_factory=list)
@@ -66,6 +71,16 @@ class ParagraphInfo(BaseModel):
     keywords: list[str] = Field(default_factory=list)
 
 
+class SectionInfo(BaseModel):
+    section_order: int
+    section_name: str
+    paragraph_count: int
+    original_text: str
+    cleaned_text: str
+    summary: str
+    keywords: list[str] = Field(default_factory=list)
+
+
 class TableInfo(BaseModel):
     role: Literal["대표", "연관"]
     table_title: str | None = None
@@ -76,14 +91,17 @@ class TableInfo(BaseModel):
 class ResultBundle(BaseModel):
     result_id: str
     query: str
+    query_keywords: list[str] = Field(default_factory=list)
     matched_keyword: str
     match_type: Literal["exact", "selected"]
+    explanation: str = ""
     primary_paper: PaperSummary
     related_paper: PaperSummary | None = None
     primary_info: PaperInfo
     related_info: PaperInfo | None = None
     primary_paragraphs: list[ParagraphInfo] = Field(default_factory=list)
     related_paragraphs: list[ParagraphInfo] = Field(default_factory=list)
+    primary_sections: list[SectionInfo] = Field(default_factory=list)
+    related_sections: list[SectionInfo] = Field(default_factory=list)
     tables: list[TableInfo] = Field(default_factory=list)
     created_at: datetime
-

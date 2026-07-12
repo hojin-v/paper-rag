@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
+from paperrag.config import get_settings
 from paperrag.ingest.embeddings import FakeEmbeddingClient, HttpEmbeddingClient
 from paperrag.ingest.layout import get_backend
 from paperrag.ingest.llm_enrich import OllamaClient, PassthroughEnricher
@@ -13,12 +14,30 @@ from paperrag.ingest.repository import InMemoryIngestRepository, PostgresIngestR
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    settings = get_settings()
     parser = argparse.ArgumentParser(prog="python -m paperrag.ingest")
     parser.add_argument("path", help="PDF 파일 또는 PDF 디렉터리")
-    parser.add_argument("--backend", choices=["simple", "docling"], default="simple")
+    parser.add_argument(
+        "--backend",
+        choices=["paddle", "simple", "docling"],
+        default=settings.ingest_backend,
+        help="운영 기본값은 모든 PDF를 OCR 처리하는 paddle입니다.",
+    )
     parser.add_argument("--skip-llm", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+
+    if args.skip_llm and not (args.dry_run or settings.allow_degraded_results):
+        parser.error(
+            "--skip-llm은 dry-run 또는 PAPERRAG_ALLOW_DEGRADED_RESULTS=true에서만 허용됩니다."
+        )
+    if args.backend != "paddle" and not (
+        args.dry_run or settings.allow_diagnostic_backends
+    ):
+        parser.error(
+            "운영 적재는 paddle만 허용합니다. 진단 backend는 "
+            "PAPERRAG_ALLOW_DIAGNOSTIC_BACKENDS=true에서만 사용하세요."
+        )
 
     pdf_paths = _resolve_pdf_paths(Path(args.path))
     repo = InMemoryIngestRepository() if args.dry_run else PostgresIngestRepository()

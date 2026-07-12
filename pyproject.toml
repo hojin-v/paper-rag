@@ -29,8 +29,10 @@ ingest = [
     "pymupdf",
 ]
 ingest-full = [
+    "pymupdf",
     "docling",
-    "paddleocr",
+    "paddlepaddle==3.3.0",
+    "paddleocr[doc-parser]==3.7.0",
     "kiwipiepy",
 ]
 embed = [

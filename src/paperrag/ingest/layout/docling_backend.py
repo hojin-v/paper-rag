@@ -127,7 +127,15 @@ def _map_item(
         block_type = "text"
         text = _item_text(item, document=document)
 
-    return LayoutBlock(page=_page_no(item), block_type=block_type, text=text, order=order)
+    return LayoutBlock(
+        page=_page_no(item),
+        block_type=block_type,
+        text=text,
+        order=order,
+        bbox=_bbox(item, document=document),
+        confidence=_confidence(item),
+        ocr_engine="docling",
+    )
 
 
 def _label_value(item: Any) -> str:
@@ -144,6 +152,62 @@ def _page_no(item: Any) -> int:
         return int(page_no)
     except (TypeError, ValueError):
         return 1
+
+
+def _bbox(
+    item: Any,
+    *,
+    document: Any | None = None,
+) -> tuple[float, float, float, float] | None:
+    prov_items = getattr(item, "prov", None) or []
+    first = prov_items[0] if prov_items else None
+    bbox = first.get("bbox") if isinstance(first, dict) else getattr(first, "bbox", None)
+    if bbox is None:
+        return None
+    if isinstance(bbox, dict):
+        values = [bbox.get(name) for name in ("l", "t", "r", "b")]
+    elif isinstance(bbox, (list, tuple)):
+        values = list(bbox)
+    else:
+        values = [getattr(bbox, name, None) for name in ("l", "t", "r", "b")]
+    if len(values) != 4 or any(value is None for value in values):
+        return None
+    try:
+        left, top, right, bottom = (float(value) for value in values)
+    except (TypeError, ValueError):
+        return None
+    x0, x1 = min(left, right), max(left, right)
+    y0, y1 = min(top, bottom), max(top, bottom)
+    origin = str(getattr(getattr(bbox, "coord_origin", None), "value", "")).upper()
+    page_height = _page_height(document, _page_no(item))
+    if origin == "BOTTOMLEFT" and page_height is not None:
+        return (x0, page_height - y1, x1, page_height - y0)
+    return (x0, y0, x1, y1)
+
+
+def _page_height(document: Any | None, page_no: int) -> float | None:
+    pages = getattr(document, "pages", None)
+    if pages is None:
+        return None
+    page = pages.get(page_no) if isinstance(pages, dict) else None
+    size = getattr(page, "size", None)
+    value = getattr(size, "height", None)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _confidence(item: Any) -> float | None:
+    for name in ("confidence", "score", "conf"):
+        value = getattr(item, name, None)
+        if value is None:
+            continue
+        try:
+            return max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _item_text(item: Any, *, document: Any | None = None) -> str:

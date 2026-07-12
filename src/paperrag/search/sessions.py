@@ -11,6 +11,7 @@ SEARCH_SESSION_TTL = timedelta(minutes=30)
 class SuggestionSession:
     session_id: str
     query: str
+    query_keywords: list[str]
     candidates: list[KeywordCandidate]
     expires_at: datetime
 
@@ -20,12 +21,18 @@ class SuggestionSessionStore:
         self.ttl = ttl
         self._sessions: dict[str, SuggestionSession] = {}
 
-    def create(self, query: str, candidates: list[KeywordCandidate]) -> SuggestionSession:
+    def create(
+        self,
+        query: str,
+        candidates: list[KeywordCandidate],
+        query_keywords: list[str] | None = None,
+    ) -> SuggestionSession:
         self._sweep()
         session_id = str(uuid4())
         session = SuggestionSession(
             session_id=session_id,
             query=query,
+            query_keywords=list(query_keywords or []),
             candidates=list(candidates),
             expires_at=datetime.now(UTC) + self.ttl,
         )
@@ -58,4 +65,3 @@ class SuggestionSessionStore:
 def new_result_id(now: datetime | None = None) -> str:
     current = now or datetime.now(UTC)
     return f"r-{current:%Y%m%d}-{uuid4().hex[:8]}"
-

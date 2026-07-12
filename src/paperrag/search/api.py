@@ -1,15 +1,24 @@
 import os
 
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from starlette.concurrency import run_in_threadpool
 from starlette.types import Receive, Scope, Send
 
 from paperrag.config import get_settings
+from paperrag.review.api import router as review_router
+from paperrag.readiness import build_readiness_report
 from paperrag.search.repository import PostgresSearchRepository
 from paperrag.search.schemas import SearchMatched, SearchRequest, SearchSuggest, SelectRequest
-from paperrag.search.service import SearchNoPaperFound, SearchService, SearchSessionNotFound
+from paperrag.search.service import (
+    SearchDependencyError,
+    SearchNoPaperFound,
+    SearchService,
+    SearchSessionNotFound,
+)
 
 app = FastAPI(title="Paper RAG Search API")
+app.include_router(review_router)
 
 _service: SearchService | None = None
 
@@ -54,15 +63,24 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/ready")
+async def ready() -> JSONResponse:
+    report = await run_in_threadpool(build_readiness_report, get_settings())
+    status_code = 200 if report["status"] == "ready" else 503
+    return JSONResponse(report, status_code=status_code)
+
+
 @app.post("/search", response_model=SearchMatched | SearchSuggest)
 async def search(
     request: SearchRequest,
     service: SearchService = Depends(get_service),
 ) -> SearchMatched | SearchSuggest:
     try:
-        return service.search(request.query)
+        return await run_in_threadpool(service.search, request.query)
     except SearchNoPaperFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SearchDependencyError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/search/select", response_model=SearchMatched)
@@ -71,11 +89,17 @@ async def select(
     service: SearchService = Depends(get_service),
 ) -> SearchMatched:
     try:
-        return service.select(request.session_id, request.keyword_id)
+        return await run_in_threadpool(
+            service.select,
+            request.session_id,
+            request.keyword_id,
+        )
     except SearchSessionNotFound as exc:
         raise HTTPException(status_code=404, detail="suggest session expired or not found") from exc
     except SearchNoPaperFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SearchDependencyError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/result/{result_id}/excel")

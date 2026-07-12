@@ -48,6 +48,9 @@ cp .env.example .env
 
 | 키 | 기본값 | 설명 |
 | --- | --- | --- |
+| `PAPERRAG_RUNTIME_MODE` | `production` | 준비 점검과 운영 정책 적용 |
+| `PAPERRAG_ALLOW_DEGRADED_RESULTS` | `false` | LLM 실패 결과 대체 차단 |
+| `PAPERRAG_ALLOW_DIAGNOSTIC_BACKENDS` | `false` | OCR 없는 backend 운영 차단 |
 | `PAPERRAG_DATABASE_URL` | `postgresql+psycopg://paperrag:paperrag@localhost:5432/paperrag` | Cloud/로컬 PostgreSQL |
 | `PAPERRAG_OLLAMA_BASE_URL` | `http://localhost:11434` | 로컬 LLM 서버 |
 | `PAPERRAG_LLM_MODEL` | `qwen2.5:7b-instruct-q4_K_M` | 요약·키워드용 경량 LLM |
@@ -61,13 +64,13 @@ cp .env.example .env
 
 | extra | 포함 패키지 | 필요한 시점 |
 | --- | --- | --- |
-| `.[ingest]` | pymupdf | PDF triage·simple 백엔드 |
+| `.[ingest]` | pymupdf | PDF 페이지 렌더링·simple 진단 백엔드 |
 | `.[ingest-full]` | docling, paddleocr, kiwipiepy | 실제 레이아웃 분석·OCR·형태소 정규화 |
 | `.[worker]` | celery[redis] | 대량 배치 병렬화 |
 | `.[ui]` | streamlit | 검색 UI |
 
-> `ingest-full`은 다운로드 용량이 크다(모델 포함 수 GB). 폐쇄망 반입 시에는 wheel과 모델 파일을
-> 사전에 번들로 준비한다 (DESIGN.md §2 배포 참조).
+> 핵심 Paddle 레이아웃·OCR 모델 3종은 약 42MB이며 BGE-M3와 Ollama 모델이 전체 저장공간의 대부분을
+> 차지한다. 폐쇄망 배포 전에는 설치 wheel과 `models/`·모델 캐시를 별도 번들로 준비한다.
 
 ## 완료 체크리스트
 
@@ -75,3 +78,4 @@ cp .env.example .env
 - [ ] `docker --version` 정상 (WSL 통합 활성)
 - [ ] `.env` 생성 완료
 - [ ] (선택) `codex --version` 정상
+- [ ] `python scripts/preflight.py`의 실패 항목을 확인했다.

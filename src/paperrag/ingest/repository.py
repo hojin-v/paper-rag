@@ -6,7 +6,7 @@ from typing import Any, Protocol
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from paperrag.config import Settings
+from paperrag.config import Settings, get_settings
 from paperrag.db import get_engine
 from paperrag.ingest.models import PaperMeta, TableDraft
 
@@ -19,6 +19,7 @@ class ParagraphRecord:
     cleaned_text: str
     summary: str
     is_topic_relevant: bool
+    keywords: list[str] | None = None
     embedding: list[float] | None = None
 
 
@@ -31,8 +32,14 @@ class IngestRepository(Protocol):
     ) -> int:
         """Persist paper metadata and return paper_id."""
 
+    def delete_paper(self, paper_id: int) -> None:
+        """실패한 적재 실행에서 생성한 논문과 종속 데이터를 제거한다."""
+
     def save_paragraphs(self, paper_id: int, paragraphs: Sequence[ParagraphRecord]) -> list[int]:
         """Persist paragraphs and return paragraph_ids."""
+
+    def update_paper_enrichment(self, paper_id: int, abstract_summary: str) -> None:
+        """Persist paper-level LLM enrichment."""
 
     def upsert_keyword(
         self,
@@ -69,7 +76,8 @@ class IngestRepository(Protocol):
 
 class PostgresIngestRepository:
     def __init__(self, settings: Settings | None = None, engine: Engine | None = None) -> None:
-        self.engine = engine or get_engine(settings)
+        self.settings = settings or get_settings()
+        self.engine = engine or get_engine(self.settings)
 
     def save_paper(
         self,
@@ -105,6 +113,13 @@ class PostgresIngestRepository:
             ).scalar_one()
         return int(paper_id)
 
+    def delete_paper(self, paper_id: int) -> None:
+        with self.engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM papers WHERE paper_id = :paper_id"),
+                {"paper_id": paper_id},
+            )
+
     def update_paper_embedding(self, paper_id: int, embedding: list[float]) -> None:
         with self.engine.begin() as connection:
             connection.execute(
@@ -118,16 +133,23 @@ class PostgresIngestRepository:
                 {"paper_id": paper_id, "paper_embedding": _vector_literal(embedding)},
             )
 
+    def update_paper_enrichment(self, paper_id: int, abstract_summary: str) -> None:
+        with self.engine.begin() as connection:
+            connection.execute(
+                text("UPDATE papers SET abstract_summary = :summary WHERE paper_id = :paper_id"),
+                {"paper_id": paper_id, "summary": abstract_summary},
+            )
+
     def save_paragraphs(self, paper_id: int, paragraphs: Sequence[ParagraphRecord]) -> list[int]:
         statement = text(
             """
             INSERT INTO paragraphs (
                 paper_id, section_name, paragraph_order, original_text,
-                cleaned_text, summary, is_topic_relevant, embedding
+                cleaned_text, summary, keywords, is_topic_relevant, embedding
             )
             VALUES (
                 :paper_id, :section_name, :paragraph_order, :original_text,
-                :cleaned_text, :summary, :is_topic_relevant, CAST(:embedding AS vector)
+                :cleaned_text, :summary, :keywords, :is_topic_relevant, CAST(:embedding AS vector)
             )
             RETURNING paragraph_id
             """
@@ -144,6 +166,7 @@ class PostgresIngestRepository:
                         "original_text": paragraph.original_text,
                         "cleaned_text": paragraph.cleaned_text,
                         "summary": paragraph.summary,
+                        "keywords": paragraph.keywords or [],
                         "is_topic_relevant": paragraph.is_topic_relevant,
                         "embedding": _vector_literal(paragraph.embedding),
                     },
@@ -157,25 +180,81 @@ class PostgresIngestRepository:
         display: str,
         embedding: list[float] | None = None,
     ) -> int:
-        statement = text(
-            """
-            INSERT INTO keywords (keyword, display_form, embedding)
-            VALUES (:keyword, :display_form, CAST(:embedding AS vector))
-            ON CONFLICT (keyword) DO UPDATE
-            SET
-                frequency = keywords.frequency + 1,
-                display_form = EXCLUDED.display_form,
-                embedding = COALESCE(EXCLUDED.embedding, keywords.embedding)
-            RETURNING keyword_id
-            """
-        )
+        vector_literal = _vector_literal(embedding)
         with self.engine.begin() as connection:
+            existing = connection.execute(
+                text(
+                    """
+                    SELECT k.keyword_id
+                    FROM keywords k
+                    LEFT JOIN keyword_aliases ka ON ka.keyword_id = k.keyword_id
+                    WHERE k.keyword = :keyword OR ka.alias = :keyword
+                    LIMIT 1
+                    """
+                ),
+                {"keyword": normalized},
+            ).scalar_one_or_none()
+            if existing is not None:
+                connection.execute(
+                    text(
+                        """
+                        UPDATE keywords
+                        SET frequency = frequency + 1,
+                            embedding = COALESCE(CAST(:embedding AS vector), embedding)
+                        WHERE keyword_id = :keyword_id
+                        """
+                    ),
+                    {"keyword_id": existing, "embedding": vector_literal},
+                )
+                return int(existing)
+
+            nearest = None
+            if vector_literal is not None:
+                nearest = connection.execute(
+                    text(
+                        """
+                        SELECT keyword_id,
+                               1 - (embedding <=> CAST(:embedding AS vector)) AS similarity
+                        FROM keywords
+                        WHERE embedding IS NOT NULL
+                        ORDER BY embedding <=> CAST(:embedding AS vector)
+                        LIMIT 1
+                        """
+                    ),
+                    {"embedding": vector_literal},
+                ).mappings().first()
+            if nearest is not None and float(nearest["similarity"]) >= (
+                self.settings.keyword_alias_similarity_threshold
+            ):
+                keyword_id = int(nearest["keyword_id"])
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO keyword_aliases (alias, keyword_id)
+                        VALUES (:alias, :keyword_id)
+                        ON CONFLICT (alias) DO UPDATE SET keyword_id = EXCLUDED.keyword_id
+                        """
+                    ),
+                    {"alias": normalized, "keyword_id": keyword_id},
+                )
+                connection.execute(
+                    text("UPDATE keywords SET frequency = frequency + 1 WHERE keyword_id = :id"),
+                    {"id": keyword_id},
+                )
+                return keyword_id
+
             keyword_id = connection.execute(
-                statement,
+                text(
+                    """
+                    INSERT INTO keywords (keyword, display_form, embedding)
+                    VALUES (:keyword, :display_form, CAST(:embedding AS vector))
+                    RETURNING keyword_id
+                    """
+                ),
                 {
                     "keyword": normalized,
                     "display_form": display,
-                    "embedding": _vector_literal(embedding),
+                    "embedding": vector_literal,
                 },
             ).scalar_one()
         return int(keyword_id)
@@ -354,8 +433,32 @@ class InMemoryIngestRepository:
         }
         return paper_id
 
+    def delete_paper(self, paper_id: int) -> None:
+        self.papers.pop(paper_id, None)
+        self.paragraphs = {
+            row_id: row
+            for row_id, row in self.paragraphs.items()
+            if row["paper_id"] != paper_id
+        }
+        self.paper_keywords = [
+            row for row in self.paper_keywords if row["paper_id"] != paper_id
+        ]
+        self.tables = {
+            row_id: row
+            for row_id, row in self.tables.items()
+            if row["paper_id"] != paper_id
+        }
+        self.relations = [
+            row
+            for row in self.relations
+            if row["source_paper_id"] != paper_id and row["related_paper_id"] != paper_id
+        ]
+
     def update_paper_embedding(self, paper_id: int, embedding: list[float]) -> None:
         self.papers[paper_id]["embedding"] = embedding
+
+    def update_paper_enrichment(self, paper_id: int, abstract_summary: str) -> None:
+        self.papers[paper_id]["abstract_summary"] = abstract_summary
 
     def save_paragraphs(self, paper_id: int, paragraphs: Sequence[ParagraphRecord]) -> list[int]:
         paragraph_ids: list[int] = []
@@ -370,6 +473,7 @@ class InMemoryIngestRepository:
                 "original_text": paragraph.original_text,
                 "cleaned_text": paragraph.cleaned_text,
                 "summary": paragraph.summary,
+                "keywords": list(paragraph.keywords or []),
                 "is_topic_relevant": paragraph.is_topic_relevant,
                 "embedding": paragraph.embedding,
             }

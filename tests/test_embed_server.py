@@ -84,6 +84,7 @@ def test_health(embed_client: TestClient) -> None:
         "encoder": "hash",
         "model": "BAAI/bge-m3",
         "dim": 1024,
+        "production_ready": False,
     }
 
 

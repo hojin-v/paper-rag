@@ -1,0 +1,2 @@
+ALTER TABLE paragraphs
+    ADD COLUMN IF NOT EXISTS keywords TEXT[] NOT NULL DEFAULT ARRAY[]::text[];

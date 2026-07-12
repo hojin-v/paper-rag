@@ -1,21 +1,21 @@
 # 08. 임베딩 HTTP 서버
 
-BGE-M3 임베딩 서버를 hash 개발 모드로 검증하고, 운영 모드에서 sentence-transformers 기반 모델로 전환한다.
+BGE-M3 임베딩 서버를 실제 sentence-transformers 모델로 실행하고 hash 테스트 벡터가 운영에 섞이지 않게 검증한다.
 
 ```text
 수집/검색 파이프라인
   └─ HttpEmbeddingClient
        └─ POST http://localhost:8100/embed
-            ├─ hash: 모델 없이 1024차원 결정적 벡터
-            └─ st: BAAI/bge-m3 sentence-transformers CPU 인코더
+            ├─ st: BAAI/bge-m3 sentence-transformers CPU 인코더 (운영)
+            └─ hash: 모델 없이 1024차원 결정적 벡터 (단위 테스트 전용)
 ```
 
-# 1단계: hash 모드로 서버 기동
+# 1단계: hash 테스트 모드 구분
 
 | 항목 | 값 | 설명 |
 | --- | --- | --- |
 | 앱 | `paperrag.embed.server:app` | FastAPI 임베딩 서버 엔트리포인트 |
-| 모드 | `PAPERRAG_EMBED_ENCODER=hash` | 모델 파일 없이 개발·테스트용 결정적 벡터를 생성한다. |
+| 모드 | `PAPERRAG_EMBED_ENCODER=hash` | 모델 파일 없이 단위 테스트용 결정적 벡터를 생성한다. 의미 검색에는 사용할 수 없다. |
 | 차원 | `PAPERRAG_EMBED_DIM=1024` | 설계서의 BGE-M3 벡터 차원과 맞춘다. |
 | 포트 | `8100` | `Settings.embed_base_url` 기본값과 같은 포트다. |
 
@@ -35,9 +35,12 @@ curl -s http://localhost:8100/health | python -m json.tool
   "status": "ok",
   "encoder": "hash",
   "model": "BAAI/bge-m3",
-  "dim": 1024
+  "dim": 1024,
+  "production_ready": false
 }
 ```
+
+> hash 벡터는 길이와 결정성만 검증한다. 검색 정확도를 나타내지 않으며 `/ready`는 이를 오류로 판정한다.
 
 # 2단계: curl로 임베딩 검증
 
@@ -92,6 +95,8 @@ uvicorn paperrag.embed.server:app --host 0.0.0.0 --port 8100
 curl -s http://localhost:8100/health | python -m json.tool
 ```
 
+`encoder=st`, `dim=1024`, `production_ready=true`인지 확인한다.
+
 > 주의: `st` 모드 최초 실행 시 BGE-M3 모델 다운로드가 발생하며 약 2GB의 모델 파일 공간이 필요하다. 폐쇄망 운영 환경에서는 모델 캐시를 사전에 반입한다.
 
 > 주의: 인코더 또는 모델을 변경하면 기존 저장 벡터와 호환되지 않는다. `docs/design/DESIGN.md` §6의 임베딩 파인튜닝 절차와 동일하게 전체 벡터를 재임베딩해야 한다.
@@ -102,7 +107,7 @@ curl -s http://localhost:8100/health | python -m json.tool
 | --- | --- | --- |
 | 서비스 | `embedder` | 동일 이미지에서 임베딩 서버만 실행한다. |
 | command | `uvicorn paperrag.embed.server:app --host 0.0.0.0 --port 8100` | compose 서비스 명령 |
-| 기본 모드 | `PAPERRAG_EMBED_ENCODER=hash` | 개발 기본값 |
+| 기본 모드 | `PAPERRAG_EMBED_ENCODER=st` | compose가 운영 모델을 강제한다. |
 | DB 의존성 | 없음 | PostgreSQL 기동 상태와 무관하게 실행 가능하다. |
 
 ```bash
@@ -113,11 +118,6 @@ docker compose up embedder
 ```bash
 docker compose ps embedder
 curl -s http://localhost:8100/health
-```
-
-운영 모드 전환 예시:
-```bash
-PAPERRAG_EMBED_ENCODER=st docker compose up embedder
 ```
 
 # 5단계: 파이프라인 연동
@@ -132,7 +132,7 @@ PAPERRAG_EMBED_ENCODER=st docker compose up embedder
 
 ```bash
 PAPERRAG_EMBED_BASE_URL=http://localhost:8100 \
-python -m paperrag.ingest data/inbox --backend simple
+python -m paperrag.ingest data/inbox --backend paddle
 ```
 
 검증:
@@ -142,7 +142,7 @@ python -c "from paperrag.ingest.embeddings import HttpEmbeddingClient; print(len
 ```
 
 ## 완료 체크리스트
-- [ ] hash 모드에서 `/health`가 200을 반환한다.
+- [ ] hash 모드가 `production_ready=false`이며 운영 `/ready`에서 거부된다.
 - [ ] `/embed`가 `{"texts": [...]}` 요청에 `{"embeddings": [...]}`로 응답한다.
 - [ ] 빈 `texts` 요청이 빈 `embeddings`를 반환한다.
 - [ ] 운영 모드 전환에 필요한 `.[embed]` 의존성과 `PAPERRAG_EMBED_ENCODER=st` 설정을 확인했다.

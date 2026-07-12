@@ -30,3 +30,39 @@ def test_build_paragraphs_splits_long_text_on_sentence_boundary() -> None:
     assert len(paragraphs) > 1
     assert all(len(paragraph.original_text) <= 80 for paragraph in paragraphs)
     assert all(paragraph.section_name == "본문" for paragraph in paragraphs)
+
+
+def test_build_paragraphs_rejoins_column_split_inside_sentence() -> None:
+    blocks = [
+        LayoutBlock(page=1, block_type="section_header", text="1 Introduction", order=1),
+        LayoutBlock(
+            page=1,
+            block_type="text",
+            text="A" * 120 + " many business",
+            order=2,
+        ),
+        LayoutBlock(
+            page=1,
+            block_type="text",
+            text="applications. " + "B" * 120,
+            order=3,
+        ),
+    ]
+
+    paragraphs = build_paragraphs(blocks, min_chars=100, max_chars=1500)
+
+    assert len(paragraphs) == 1
+    assert paragraphs[0].section_name == "1 Introduction"
+    assert "many business\n\napplications." in paragraphs[0].original_text
+
+
+def test_build_paragraphs_does_not_merge_complete_long_paragraphs() -> None:
+    blocks = [
+        LayoutBlock(page=1, block_type="section_header", text="Results", order=1),
+        LayoutBlock(page=1, block_type="text", text="A" * 120 + ".", order=2),
+        LayoutBlock(page=1, block_type="text", text="another " + "B" * 120, order=3),
+    ]
+
+    paragraphs = build_paragraphs(blocks, min_chars=100, max_chars=1500)
+
+    assert len(paragraphs) == 2

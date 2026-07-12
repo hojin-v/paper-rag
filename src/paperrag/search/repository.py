@@ -143,7 +143,10 @@ class PostgresSearchRepository:
                 k.embedding::text AS embedding
             FROM keywords k
             LEFT JOIN keyword_aliases ka ON ka.keyword_id = k.keyword_id
-            WHERE k.keyword = :normalized OR ka.alias = :normalized
+            WHERE (k.keyword = :normalized OR ka.alias = :normalized)
+              AND EXISTS (
+                  SELECT 1 FROM paper_keywords pk WHERE pk.keyword_id = k.keyword_id
+              )
             ORDER BY CASE WHEN k.keyword = :normalized THEN 0 ELSE 1 END
             LIMIT 1
             """
@@ -166,9 +169,12 @@ class PostgresSearchRepository:
                 keyword_id,
                 display_form,
                 1 - (embedding <=> CAST(:embedding AS vector)) AS similarity
-            FROM keywords
-            WHERE embedding IS NOT NULL
-            ORDER BY embedding <=> CAST(:embedding AS vector)
+            FROM keywords k
+            WHERE k.embedding IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM paper_keywords pk WHERE pk.keyword_id = k.keyword_id
+              )
+            ORDER BY k.embedding <=> CAST(:embedding AS vector)
             LIMIT :top_k
             """
         )
@@ -312,14 +318,14 @@ class PostgresSearchRepository:
                 section_name,
                 original_text,
                 cleaned_text,
-                summary
+                summary,
+                keywords
             FROM paragraphs
             WHERE paper_id = :paper_id
               AND is_topic_relevant = true
             ORDER BY paragraph_order ASC, paragraph_id ASC
             """
         )
-        keywords = self.paper_keywords(paper_id)
         with self.engine.begin() as connection:
             rows = connection.execute(statement, {"paper_id": paper_id}).mappings().all()
         return [
@@ -331,7 +337,7 @@ class PostgresSearchRepository:
                 original_text=str(row["original_text"] or ""),
                 cleaned_text=str(row["cleaned_text"] or ""),
                 summary=str(row["summary"] or ""),
-                keywords=keywords,
+                keywords=list(row["keywords"] or []),
             )
             for row in rows
         ]
@@ -575,10 +581,12 @@ class InMemorySearchRepository:
 
     def find_keyword_exact(self, normalized: str) -> KeywordRow | None:
         for row in self.keywords.values():
-            if row["keyword"] == normalized:
+            if row["keyword"] == normalized and self._has_linked_paper(
+                int(row["keyword_id"])
+            ):
                 return _keyword_from_mapping(row)
         keyword_id = self.aliases.get(normalized)
-        if keyword_id is None:
+        if keyword_id is None or not self._has_linked_paper(keyword_id):
             return None
         return self.keyword_by_id(keyword_id)
 
@@ -590,6 +598,8 @@ class InMemorySearchRepository:
     ) -> list[KeywordCandidate]:
         scored: list[KeywordCandidate] = []
         for row in self.keywords.values():
+            if not self._has_linked_paper(int(row["keyword_id"])):
+                continue
             embedding = row.get("embedding")
             if embedding is None:
                 continue
@@ -603,6 +613,11 @@ class InMemorySearchRepository:
                     )
                 )
         return sorted(scored, key=lambda item: item.similarity, reverse=True)[:top_k]
+
+    def _has_linked_paper(self, keyword_id: int) -> bool:
+        return any(
+            int(row["keyword_id"]) == keyword_id for row in self.paper_keyword_rows
+        )
 
     def papers_for_keyword(self, keyword_id: int) -> list[PaperKeywordRow]:
         rows = [

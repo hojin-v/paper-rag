@@ -491,8 +491,14 @@ def _assert_excel(path: Path, expected_primary_title: str) -> None:
     summary = workbook["검색 결과 요약"]
     assert summary["A2"].value
     assert summary["B2"].value
-    assert summary["D2"].value == expected_primary_title
-    assert summary["G2"].value
+    assert summary["D2"].value in {"exact", "similar", "selected"}
+    assert summary["E2"].value
+    assert summary["F2"].value == expected_primary_title
+    assert summary["I2"].value
+
+    primary_sections = workbook["대표 논문 섹션"]
+    assert primary_sections["B2"].value
+    assert primary_sections["D2"].value
 
     primary_paragraphs = workbook["대표 논문 단락"]
     assert primary_paragraphs["C2"].value
@@ -503,8 +509,11 @@ def _expected_sheet_names() -> list[str]:
     return [
         "검색 결과 요약",
         "대표 논문 정보",
+        "대표 논문 섹션",
         "대표 논문 단락",
         "연관 논문 정보",
+        "연관 논문 섹션",
         "연관 논문 단락",
         "표 데이터",
+        "표 셀",
     ]

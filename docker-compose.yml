@@ -17,7 +17,7 @@ services:
       retries: 5
 
   redis:
-    # Redis broker for future Celery ingestion workers.
+    # Redis broker for Celery ingestion workers.
     image: redis:7-alpine
     ports:
       - "6379:6379"
@@ -31,7 +31,7 @@ services:
       - "11434:11434"
 
   embedder:
-    # HTTP embedding server for BGE-M3 or deterministic offline hash vectors.
+    # HTTP embedding server for the production BGE-M3 encoder.
     build: .
     command: uvicorn paperrag.embed.server:app --host 0.0.0.0 --port 8100
     ports:
@@ -39,7 +39,7 @@ services:
     env_file:
       - .env
     environment:
-      PAPERRAG_EMBED_ENCODER: hash
+      PAPERRAG_EMBED_ENCODER: st
 
   api:
     # FastAPI search service.
@@ -47,14 +47,31 @@ services:
     command: uvicorn paperrag.search.api:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
+    volumes:
+      - review_data:/app/data/review
+      - result_data:/app/outputs
+      - ./models:/app/models:ro
     depends_on:
       postgres:
         condition: service_healthy
+      embedder:
+        condition: service_started
+      ollama:
+        condition: service_started
     env_file:
       - .env
     environment:
       PAPERRAG_DATABASE_URL: postgresql+psycopg://paperrag:paperrag@postgres:5432/paperrag
       PAPERRAG_OLLAMA_BASE_URL: http://ollama:11434
+      PAPERRAG_EMBED_BASE_URL: http://embedder:8100
+      PAPERRAG_REVIEW_DIR: /app/data/review
+      PAPERRAG_RESULT_DIR: /app/outputs
+      PAPERRAG_PADDLEX_CACHE_DIR: /app/models/paddlex
+      PAPERRAG_PADDLE_LAYOUT_MODEL_DIR: /app/models/paddlex/official_models/PP-DocLayout-M
+      PAPERRAG_PADDLE_TEXT_DETECTION_MODEL_DIR: /app/models/paddlex/official_models/PP-OCRv5_mobile_det
+      PAPERRAG_PADDLE_OCR_MODEL_DIR: /app/models/paddlex/official_models/korean_PP-OCRv5_mobile_rec
+      FLAGS_use_mkldnn: "0"
+      PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT: "False"
       PAPERRAG_REDIS_URL: redis://redis:6379/0
       PAPERRAG_CELERY_BROKER_URL: redis://redis:6379/0
       PAPERRAG_CELERY_RESULT_BACKEND: redis://redis:6379/1
@@ -68,11 +85,28 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      embedder:
+        condition: service_started
+      ollama:
+        condition: service_started
+    volumes:
+      - review_data:/app/data/review
+      - result_data:/app/outputs
+      - ./models:/app/models:ro
     env_file:
       - .env
     environment:
       PAPERRAG_DATABASE_URL: postgresql+psycopg://paperrag:paperrag@postgres:5432/paperrag
       PAPERRAG_OLLAMA_BASE_URL: http://ollama:11434
+      PAPERRAG_EMBED_BASE_URL: http://embedder:8100
+      PAPERRAG_REVIEW_DIR: /app/data/review
+      PAPERRAG_RESULT_DIR: /app/outputs
+      PAPERRAG_PADDLEX_CACHE_DIR: /app/models/paddlex
+      PAPERRAG_PADDLE_LAYOUT_MODEL_DIR: /app/models/paddlex/official_models/PP-DocLayout-M
+      PAPERRAG_PADDLE_TEXT_DETECTION_MODEL_DIR: /app/models/paddlex/official_models/PP-OCRv5_mobile_det
+      PAPERRAG_PADDLE_OCR_MODEL_DIR: /app/models/paddlex/official_models/korean_PP-OCRv5_mobile_rec
+      FLAGS_use_mkldnn: "0"
+      PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT: "False"
       PAPERRAG_REDIS_URL: redis://redis:6379/0
       PAPERRAG_CELERY_BROKER_URL: redis://redis:6379/0
       PAPERRAG_CELERY_RESULT_BACKEND: redis://redis:6379/1
@@ -86,17 +120,21 @@ services:
     ports:
       - "8501:8501"
     depends_on:
-      postgres:
-        condition: service_healthy
+      api:
+        condition: service_started
     env_file:
       - .env
     environment:
       PAPERRAG_DATABASE_URL: postgresql+psycopg://paperrag:paperrag@postgres:5432/paperrag
       PAPERRAG_OLLAMA_BASE_URL: http://ollama:11434
       PAPERRAG_REDIS_URL: redis://redis:6379/0
+      PAPERRAG_API_BASE_URL: http://api:8000
+      PAPERRAG_PUBLIC_API_BASE_URL: http://localhost:8000
     profiles:
       - ui
 
 volumes:
   pgdata:
   ollama_models:
+  review_data:
+  result_data:

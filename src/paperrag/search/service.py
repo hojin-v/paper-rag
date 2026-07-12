@@ -8,12 +8,19 @@ from paperrag.ingest.embeddings import EmbeddingClient
 from paperrag.ingest.keywords import normalize
 from paperrag.ingest.llm_enrich import LLMClient
 from paperrag.search.excel import build_excel
-from paperrag.search.repository import KeywordRow, PaperKeywordRow, PaperMetaRow, SearchRepository
+from paperrag.search.repository import (
+    KeywordRow,
+    PaperKeywordRow,
+    PaperMetaRow,
+    ParagraphRow,
+    SearchRepository,
+)
 from paperrag.search.schemas import (
     PaperInfo,
     PaperSummary,
     ParagraphInfo,
     ResultBundle,
+    SectionInfo,
     SearchMatched,
     SearchSuggest,
     TableInfo,
@@ -41,6 +48,10 @@ class SearchNoPaperFound(Exception):
     """No paper can be selected for the keyword."""
 
 
+class SearchDependencyError(RuntimeError):
+    """검색에 필요한 LLM 또는 임베딩 결과를 만들지 못함."""
+
+
 class SearchService:
     def __init__(
         self,
@@ -61,7 +72,11 @@ class SearchService:
         try:
             data = self.llm.generate_json(prompt, QUERY_KEYWORDS_SCHEMA_HINT)
             keywords = _clean_keywords(data.get("keywords", []))
-        except Exception:
+        except Exception as exc:
+            if not self.settings.allow_degraded_results:
+                raise SearchDependencyError(
+                    "질의 키워드 LLM 응답을 검증하지 못했습니다. 규칙 기반 결과로 대체하지 않습니다."
+                ) from exc
             keywords = []
         if not keywords:
             keywords = _fallback_keywords(query)
@@ -77,6 +92,7 @@ class SearchService:
                 query,
                 "exact",
                 matched_keyword=exact_match.display_form,
+                query_keywords=keywords,
             )
 
         vector_text = " ".join(keywords) if keywords else query
@@ -86,8 +102,16 @@ class SearchService:
             top_k=self.settings.search_suggestion_limit,
             min_sim=self.settings.search_similarity_threshold,
         )
-        session = self.sessions.create(query, candidates)
-        return SearchSuggest(session_id=session.session_id, candidates=candidates)
+        session = self.sessions.create(query, candidates, keywords)
+        return SearchSuggest(
+            session_id=session.session_id,
+            query_keywords=keywords,
+            explanation=(
+                f"질의에서 {', '.join(keywords) or query} 키워드를 추출했지만 정확히 "
+                f"일치하는 저장 키워드가 없어 의미적으로 가까운 {len(candidates)}개 후보를 제시합니다."
+            ),
+            candidates=candidates,
+        )
 
     def select(self, session_id: str, keyword_id: int) -> SearchMatched:
         session = self.sessions.get(session_id)
@@ -99,7 +123,13 @@ class SearchService:
         )
         if selected is None:
             raise SearchSessionNotFound(session_id)
-        return self.resolve(keyword_id, session.query, "selected", matched_keyword=selected.keyword)
+        return self.resolve(
+            keyword_id,
+            session.query,
+            "selected",
+            matched_keyword=selected.keyword,
+            query_keywords=session.query_keywords,
+        )
 
     def resolve(
         self,
@@ -107,10 +137,12 @@ class SearchService:
         query: str,
         match_type: Literal["exact", "selected"],
         matched_keyword: str | None = None,
+        query_keywords: list[str] | None = None,
     ) -> SearchMatched:
         keyword = self.repo.keyword_by_id(keyword_id)
         keyword_label = matched_keyword or (keyword.display_form if keyword else str(keyword_id))
         keyword_text = keyword.keyword if keyword is not None else normalize(keyword_label)
+        extracted_keywords = list(query_keywords or [keyword_label])
         vector = self._embed_one(keyword_text or query)
         primary_row, primary_score, primary_reason = self._select_primary(
             keyword_id,
@@ -139,6 +171,7 @@ class SearchService:
             query=query,
             matched_keyword=keyword_label,
             match_type=match_type,
+            query_keywords=extracted_keywords,
             primary=primary_summary,
             primary_meta=primary_meta,
             related=related_summary,
@@ -157,7 +190,9 @@ class SearchService:
         )
         return SearchMatched(
             matched_keyword=keyword_label,
+            query_keywords=extracted_keywords,
             match_type=match_type,
+            explanation=bundle.explanation,
             result_id=result_id,
             primary_paper=primary_summary,
             related_paper=related_summary,
@@ -249,6 +284,7 @@ class SearchService:
         query: str,
         matched_keyword: str,
         match_type: Literal["exact", "selected"],
+        query_keywords: list[str],
         primary: PaperSummary,
         primary_meta: PaperMetaRow,
         related: PaperSummary | None,
@@ -279,39 +315,36 @@ class SearchService:
                 )
                 for row in self.repo.tables_of(related_meta.paper_id)
             )
+        primary_paragraphs = _paragraph_infos(
+            self.repo.paragraphs_of(primary_meta.paper_id)
+        )
+        related_paragraphs = (
+            _paragraph_infos(self.repo.paragraphs_of(related_meta.paper_id))
+            if related_meta is not None
+            else []
+        )
+        explanation = _search_explanation(
+            query_keywords,
+            matched_keyword,
+            match_type,
+            primary,
+            related,
+        )
         return ResultBundle(
             result_id=result_id,
             query=query,
+            query_keywords=query_keywords,
             matched_keyword=matched_keyword,
             match_type=match_type,
+            explanation=explanation,
             primary_paper=primary,
             related_paper=related,
             primary_info=primary_info,
             related_info=related_info,
-            primary_paragraphs=[
-                ParagraphInfo(
-                    paragraph_order=row.paragraph_order,
-                    section_name=row.section_name,
-                    original_text=row.original_text,
-                    cleaned_text=row.cleaned_text,
-                    summary=row.summary,
-                    keywords=list(row.keywords or []),
-                )
-                for row in self.repo.paragraphs_of(primary_meta.paper_id)
-            ],
-            related_paragraphs=[
-                ParagraphInfo(
-                    paragraph_order=row.paragraph_order,
-                    section_name=row.section_name,
-                    original_text=row.original_text,
-                    cleaned_text=row.cleaned_text,
-                    summary=row.summary,
-                    keywords=list(row.keywords or []),
-                )
-                for row in self.repo.paragraphs_of(related_meta.paper_id)
-            ]
-            if related_meta is not None
-            else [],
+            primary_paragraphs=primary_paragraphs,
+            related_paragraphs=related_paragraphs,
+            primary_sections=_section_infos(primary_paragraphs),
+            related_sections=_section_infos(related_paragraphs),
             tables=tables,
             created_at=datetime.now(UTC),
         )
@@ -324,7 +357,11 @@ class SearchService:
 
     def _embed_one(self, text: str) -> list[float]:
         vectors = self.embedder.embed([text])
-        return vectors[0] if vectors else []
+        if not vectors or len(vectors[0]) != self.settings.embed_dim:
+            raise SearchDependencyError(
+                f"임베딩 결과는 {self.settings.embed_dim}차원 벡터 1개여야 합니다."
+            )
+        return vectors[0]
 
 
 def _paper_info(meta: PaperMetaRow, keywords: list[str]) -> PaperInfo:
@@ -334,9 +371,73 @@ def _paper_info(meta: PaperMetaRow, keywords: list[str]) -> PaperInfo:
         authors=meta.authors,
         published_year=meta.published_year,
         journal=meta.journal,
+        abstract=meta.abstract,
         abstract_summary=meta.abstract_summary,
         full_text_link=meta.full_text_link,
         keywords=keywords,
+    )
+
+
+def _paragraph_infos(rows: list[ParagraphRow]) -> list[ParagraphInfo]:
+    return [
+        ParagraphInfo(
+            paragraph_order=row.paragraph_order,
+            section_name=row.section_name,
+            original_text=row.original_text,
+            cleaned_text=row.cleaned_text,
+            summary=row.summary,
+            keywords=list(row.keywords or []),
+        )
+        for row in rows
+    ]
+
+
+def _section_infos(paragraphs: list[ParagraphInfo]) -> list[SectionInfo]:
+    groups: list[list[ParagraphInfo]] = []
+    for paragraph in paragraphs:
+        name = paragraph.section_name.strip() or "본문"
+        previous_name = (
+            groups[-1][0].section_name.strip() or "본문" if groups else None
+        )
+        if name != previous_name:
+            groups.append([paragraph])
+        else:
+            groups[-1].append(paragraph)
+
+    sections: list[SectionInfo] = []
+    for section_order, rows in enumerate(groups, start=1):
+        keywords: list[str] = []
+        for row in rows:
+            for keyword in row.keywords:
+                if keyword not in keywords:
+                    keywords.append(keyword)
+        sections.append(
+            SectionInfo(
+                section_order=section_order,
+                section_name=rows[0].section_name.strip() or "본문",
+                paragraph_count=len(rows),
+                original_text="\n\n".join(row.original_text for row in rows if row.original_text),
+                cleaned_text="\n\n".join(row.cleaned_text for row in rows if row.cleaned_text),
+                summary=" ".join(row.summary for row in rows if row.summary),
+                keywords=keywords,
+            )
+        )
+    return sections
+
+
+def _search_explanation(
+    query_keywords: list[str],
+    matched_keyword: str,
+    match_type: Literal["exact", "selected"],
+    primary: PaperSummary,
+    related: PaperSummary | None,
+) -> str:
+    match_text = "정확히 일치" if match_type == "exact" else "유사 키워드로 선택"
+    related_text = f" 연관 논문으로 '{related.title}'도 함께 제공합니다." if related else ""
+    return (
+        f"질의에서 {', '.join(query_keywords)} 키워드를 추출했고 저장 키워드 "
+        f"'{matched_keyword}'와 {match_text}했습니다. 점수 근거에 따라 "
+        f"'{primary.title}'을 대표 논문으로 선택했습니다.{related_text}"
     )
 
 

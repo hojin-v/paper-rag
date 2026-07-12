@@ -118,7 +118,7 @@ def test_search_suggest_and_select(client_with_service: tuple[TestClient, Search
     assert suggest_response.status_code == 200
     suggestion = suggest_response.json()
     assert suggestion["status"] == "suggest"
-    assert len(suggestion["candidates"]) == 3
+    assert len(suggestion["candidates"]) == 2
 
     select_response = client.post(
         "/search/select",
@@ -158,6 +158,7 @@ def _service(tmp_path: Path) -> SearchService:
         result_dir=tmp_path,
         search_suggestion_limit=3,
         search_similarity_threshold=0.6,
+        embed_dim=2,
     )
     return SearchService(_repo(), PromptAwareLLM(), StaticEmbeddingClient(), settings)
 

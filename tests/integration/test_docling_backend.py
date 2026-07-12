@@ -29,6 +29,14 @@ def test_docling_backend_extracts_tables_and_reference_boundary(tmp_path: Path) 
 
     assert sum(block.block_type == "table" for block in layout.blocks) >= 1
     assert sum(block.block_type == "section_header" for block in layout.blocks) >= 1
+    positioned = [block for block in layout.blocks if block.bbox is not None]
+    assert positioned
+    assert all(
+        0 <= block.bbox[0] < block.bbox[2] <= 595
+        and 0 <= block.bbox[1] < block.bbox[3] <= 842
+        for block in positioned
+        if block.bbox is not None
+    )
 
     repo = InMemoryIngestRepository()
     pipeline = IngestPipeline(
@@ -37,7 +45,6 @@ def test_docling_backend_extracts_tables_and_reference_boundary(tmp_path: Path) 
         PassthroughEnricher(),
         FakeEmbeddingClient(),
         settings=Settings(_env_file=None, paragraph_min_chars=1, paragraph_max_chars=2000),
-        triage_func=lambda path: "digital",
     )
 
     pipeline.run(str(pdf_path))

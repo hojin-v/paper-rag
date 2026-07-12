@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="720" viewBox="0 0 1600 720" role="img" aria-labelledby="title desc">
+  <title id="title">모든 PDF에 적용하는 단일 OCR 파이프라인</title>
+  <desc id="desc">디지털 텍스트 레이어를 사용하지 않고 모든 페이지를 이미지화해 레이아웃, OCR, 표 영역 텍스트 정렬을 수행한다</desc>
+  <defs><marker id="a" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0 0L12 6 0 12Z" fill="#547ca3"/></marker><filter id="s"><feDropShadow dx="0" dy="7" stdDeviation="8" flood-opacity=".18"/></filter><style>.t{font:700 38px system-ui,sans-serif;fill:#17324d}.h{font:700 23px system-ui,sans-serif;fill:#17324d}.x{font:600 18px system-ui,sans-serif;fill:#395d7b}.w{font:700 24px system-ui,sans-serif;fill:#fff}.line{stroke:#547ca3;stroke-width:5;fill:none;marker-end:url(#a)}</style></defs>
+  <rect width="1600" height="720" rx="28" fill="#f5f9fd"/>
+  <text x="65" y="70" class="t">모든 PDF를 같은 이미지 기반 OCR 경로로 처리</text>
+  <g filter="url(#s)">
+    <rect x="65" y="230" width="235" height="160" rx="25" fill="#203f60"/><text x="182" y="295" text-anchor="middle" class="w">PDF 업로드</text><text x="182" y="335" text-anchor="middle" style="font:500 17px system-ui,sans-serif;fill:#d9eaff">텍스트 레이어 미사용</text>
+    <rect x="365" y="230" width="235" height="160" rx="25" fill="#e6f1ff" stroke="#4d90df" stroke-width="3"/><text x="482" y="290" text-anchor="middle" class="h">페이지 이미지화</text><text x="482" y="330" text-anchor="middle" class="x">동일 해상도 · 좌표</text>
+    <rect x="665" y="230" width="235" height="160" rx="25" fill="#e4f8f1" stroke="#26a47c" stroke-width="3"/><text x="782" y="290" text-anchor="middle" class="h">레이아웃 + OCR</text><text x="782" y="330" text-anchor="middle" class="x">PP-StructureV3</text>
+    <rect x="965" y="230" width="235" height="160" rx="25" fill="#fff0d8" stroke="#e9a23b" stroke-width="3"/><text x="1082" y="290" text-anchor="middle" class="h">표 영역 보존</text><text x="1082" y="330" text-anchor="middle" class="x">좌표 기반 OCR 정렬</text>
+    <rect x="1265" y="230" width="270" height="160" rx="25" fill="#fff" stroke="#8ca9c5" stroke-width="3"/><text x="1400" y="280" text-anchor="middle" class="h">본문 구조화</text><text x="1400" y="320" text-anchor="middle" class="x">필터 · 단락 · 요약</text><text x="1400" y="352" text-anchor="middle" class="x">DB · Vector DB</text>
+  </g>
+  <path d="M300 310H355" class="line"/><path d="M600 310H655" class="line"/><path d="M900 310H955" class="line"/><path d="M1200 310H1255" class="line"/>
+  <g>
+    <rect x="300" y="500" width="1000" height="115" rx="25" fill="#e9f2fa"/>
+    <text x="800" y="545" text-anchor="middle" class="h">선택 이유</text>
+    <text x="800" y="582" text-anchor="middle" class="x">입력 형식과 무관한 동일 품질 기준 · 좌표 기반 검수 · 일관된 학습데이터</text>
+  </g>
+</svg>

@@ -13,6 +13,7 @@ from paperrag.ingest.llm_enrich import (
     PassthroughEnricher,
     enrich_paragraph,
     extract_paper_keywords,
+    summarize_abstract,
     summarize_table,
 )
 from paperrag.ingest.models import (
@@ -26,9 +27,8 @@ from paperrag.ingest.models import (
 from paperrag.ingest.paragraphs import build_paragraphs
 from paperrag.ingest.relations import build_relations
 from paperrag.ingest.repository import IngestRepository, ParagraphRecord
-from paperrag.ingest.triage import classify_pdf
 
-STAGE_1 = "step1_triage"
+STAGE_1 = "step1_source_check"
 STAGE_2 = "step2_layout"
 STAGE_3 = "step3_filter"
 STAGE_4 = "step4_paragraph"
@@ -47,14 +47,12 @@ class IngestPipeline:
         embedder: EmbeddingClient,
         *,
         settings: Settings | None = None,
-        triage_func: Callable[[str], str] | None = None,
     ) -> None:
         self.repo = repo
         self.layout_backend = layout_backend
         self.llm = llm
         self.embedder = embedder
         self.settings = settings or get_settings()
-        self.triage_func = triage_func or classify_pdf
 
     def run(self, pdf_path: str) -> IngestReport:
         path = str(Path(pdf_path))
@@ -74,12 +72,12 @@ class IngestPipeline:
             report.record_stage(name, success=True, count=count)
             return result
 
-        pdf_kind = stage(STAGE_1, lambda: (self.triage_func(path), 1))
+        stage(STAGE_1, lambda: (self._validate_pdf_source(path), 1))
 
         layout = stage(STAGE_2, lambda: (self.layout_backend.analyze(path), 0))
         stage_count = len(layout.blocks)
         report.stages[STAGE_2].count = stage_count
-        report.is_scanned = bool(layout.is_scanned or pdf_kind == "scanned")
+        report.is_scanned = layout.is_scanned
 
         def filter_and_save() -> tuple[tuple[PaperMeta, list[LayoutBlock], list[LayoutBlock]], int]:
             nonlocal paper_id
@@ -93,66 +91,93 @@ class IngestPipeline:
         meta, body_blocks, table_blocks = filtered
         report.stages[STAGE_3].count = len(body_blocks) + len(table_blocks)
 
-        paragraphs = stage(
-            STAGE_4,
-            lambda: (
-                build_paragraphs(
-                    body_blocks,
-                    min_chars=self.settings.paragraph_min_chars,
-                    max_chars=self.settings.paragraph_max_chars,
+        try:
+            paragraphs = stage(
+                STAGE_4,
+                lambda: (
+                    build_paragraphs(
+                        body_blocks,
+                        min_chars=self.settings.paragraph_min_chars,
+                        max_chars=self.settings.paragraph_max_chars,
+                    ),
+                    0,
                 ),
-                0,
-            ),
-        )
-        report.stages[STAGE_4].count = len(paragraphs)
+            )
+            report.stages[STAGE_4].count = len(paragraphs)
 
-        enriched_payload = stage(
-            STAGE_5,
-            lambda: self._enrich(paragraphs, table_blocks, meta),
-        )
-        enriched_paragraphs, tables, table_summaries, paper_keywords = enriched_payload
+            enriched_payload = stage(
+                STAGE_5,
+                lambda: self._enrich(paragraphs, table_blocks, meta),
+            )
+            enriched_paragraphs, tables, table_summaries, paper_keywords, abstract_summary = (
+                enriched_payload
+            )
 
-        keyword_entries = stage(
-            STAGE_6,
-            lambda: self._score_keywords(meta, enriched_paragraphs, paper_keywords),
-        )
+            keyword_entries = stage(
+                STAGE_6,
+                lambda: self._score_keywords(meta, enriched_paragraphs, paper_keywords),
+            )
 
-        persisted_payload = stage(
-            STAGE_7,
-            lambda: self._embed_and_persist(
-                paper_id,
-                meta,
-                paragraphs,
-                enriched_paragraphs,
-                keyword_entries,
-                tables,
-                table_summaries,
-            ),
-        )
-        paper_embedding, normalized_keywords = persisted_payload
+            persisted_payload = stage(
+                STAGE_7,
+                lambda: self._embed_and_persist(
+                    paper_id,
+                    meta,
+                    paragraphs,
+                    enriched_paragraphs,
+                    keyword_entries,
+                    tables,
+                    table_summaries,
+                    abstract_summary,
+                ),
+            )
+            paper_embedding, normalized_keywords = persisted_payload
 
-        relations = stage(
-            STAGE_8,
-            lambda: self._build_and_save_relations(
-                paper_id,
-                meta,
-                paper_embedding,
-                normalized_keywords,
-            ),
-        )
+            relations = stage(
+                STAGE_8,
+                lambda: self._build_and_save_relations(
+                    paper_id,
+                    meta,
+                    paper_embedding,
+                    normalized_keywords,
+                ),
+            )
 
-        report.set_total("paragraphs", len(paragraphs))
-        report.set_total("keywords", len(keyword_entries))
-        report.set_total("tables", len(tables))
-        report.set_total("relations", len(relations))
-        return report
+            report.set_total("paragraphs", len(paragraphs))
+            report.set_total("keywords", len(keyword_entries))
+            report.set_total("tables", len(tables))
+            report.set_total("relations", len(relations))
+            return report
+        except Exception as error:
+            if paper_id is not None:
+                try:
+                    self.repo.delete_paper(paper_id)
+                    report.paper_id = None
+                except Exception as cleanup_error:
+                    error.add_note(f"실패 논문 보상 삭제도 실패했습니다: {cleanup_error}")
+            raise
+
+    @staticmethod
+    def _validate_pdf_source(path: str) -> str:
+        source = Path(path)
+        if source.suffix.lower() != ".pdf":
+            raise ValueError("입력 파일 확장자는 .pdf여야 합니다.")
+        if not source.is_file():
+            raise FileNotFoundError(path)
+        with source.open("rb") as file:
+            if file.read(5) != b"%PDF-":
+                raise ValueError("PDF 시그니처가 없는 파일입니다.")
+        return "full_ocr"
 
     def _filter_blocks(
         self,
         blocks: Sequence[LayoutBlock],
         source_path: str,
     ) -> tuple[tuple[PaperMeta, list[LayoutBlock], list[LayoutBlock]], int]:
-        meta_blocks, body_blocks, table_blocks = split_blocks(blocks)
+        meta_blocks, body_blocks, table_blocks = split_blocks(
+            blocks,
+            settings=self.settings,
+        )
         meta = _extract_meta(meta_blocks, blocks, source_path)
         return (meta, body_blocks, table_blocks), len(body_blocks) + len(table_blocks)
 
@@ -161,13 +186,23 @@ class IngestPipeline:
         paragraphs: Sequence[ParagraphDraft],
         table_blocks: Sequence[LayoutBlock],
         meta: PaperMeta,
-    ) -> tuple[tuple[list[EnrichedParagraph], list[TableDraft], list[str], list[str]], int]:
+    ) -> tuple[
+        tuple[list[EnrichedParagraph], list[TableDraft], list[str], list[str], str],
+        int,
+    ]:
         enriched = [enrich_paragraph(self.llm, paragraph.original_text) for paragraph in paragraphs]
         summaries = [paragraph.summary for paragraph in enriched]
         paper_keywords = extract_paper_keywords(self.llm, meta.title, meta.abstract, summaries)
         tables = _build_tables(table_blocks)
         table_summaries = [summarize_table(self.llm, table.table_text) for table in tables]
-        return (enriched, tables, table_summaries, paper_keywords), len(enriched) + len(tables)
+        abstract_summary = summarize_abstract(self.llm, meta.abstract)
+        return (
+            enriched,
+            tables,
+            table_summaries,
+            paper_keywords,
+            abstract_summary,
+        ), len(enriched) + len(tables)
 
     def _score_keywords(
         self,
@@ -181,16 +216,15 @@ class IngestPipeline:
             for keyword in paragraph.keywords
             if keyword.strip()
         ]
-        displays_by_normalized: dict[str, str] = {}
         body_counter: Counter[str] = Counter()
 
         for keyword in body_keywords:
             normalized = normalize(keyword)
             if not normalized:
                 continue
-            displays_by_normalized.setdefault(normalized, keyword.strip())
             body_counter[normalized] += 1
 
+        displays_by_normalized: dict[str, str] = {}
         for keyword in paper_keywords:
             normalized = normalize(keyword)
             if normalized:
@@ -224,6 +258,7 @@ class IngestPipeline:
         keyword_entries: Sequence[tuple[str, str, float]],
         tables: Sequence[TableDraft],
         table_summaries: Sequence[str],
+        abstract_summary: str,
     ) -> tuple[tuple[list[float], set[str]], int]:
         paragraph_vectors = self.embedder.embed(
             [paragraph.cleaned_text for paragraph in enriched_paragraphs]
@@ -247,6 +282,9 @@ class IngestPipeline:
         update_embedding = getattr(self.repo, "update_paper_embedding", None)
         if callable(update_embedding):
             update_embedding(paper_id, paper_embedding)
+        update_enrichment = getattr(self.repo, "update_paper_enrichment", None)
+        if callable(update_enrichment):
+            update_enrichment(paper_id, abstract_summary)
 
         paragraph_records = [
             ParagraphRecord(
@@ -255,6 +293,7 @@ class IngestPipeline:
                 original_text=draft.original_text,
                 cleaned_text=enriched.cleaned_text,
                 summary=enriched.summary,
+                keywords=list(enriched.keywords),
                 is_topic_relevant=enriched.is_topic_relevant,
                 embedding=vector,
             )

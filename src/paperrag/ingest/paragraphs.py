@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from paperrag.ingest.models import LayoutBlock, ParagraphDraft
 
 SENTENCE_BOUNDARY_RE = re.compile(r"[.!?。]\s+|다\.")
+SENTENCE_END_RE = re.compile(r"[.!?。][\"')\]}]*$")
 
 
 def build_paragraphs(
@@ -64,13 +65,25 @@ def _merge_short_neighbors(
         previous_section, previous_text = merged[-1]
         should_merge = (
             previous_section == section
-            and (len(previous_text) < min_chars or len(text) < min_chars)
+            and (
+                len(previous_text) < min_chars
+                or len(text) < min_chars
+                or _continues_sentence(previous_text, text)
+            )
         )
         if should_merge:
             merged[-1] = (previous_section, f"{previous_text}\n\n{text}")
         else:
             merged.append((section, text))
     return merged
+
+
+def _continues_sentence(previous_text: str, next_text: str) -> bool:
+    previous = previous_text.rstrip()
+    following = next_text.lstrip()
+    if not previous or not following or SENTENCE_END_RE.search(previous):
+        return False
+    return following[0].islower() or previous.endswith(("-", "‐", "‑"))
 
 
 def _split_long_text(text: str, *, max_chars: int) -> list[str]:

@@ -5,6 +5,12 @@ MIGRATION_SQL = (
     Path(__file__).resolve().parents[1] / "db" / "migrations" / "0001_init.sql"
 ).read_text(encoding="utf-8")
 SQL_LOWER = MIGRATION_SQL.lower()
+ENRICHMENT_SQL = (
+    Path(__file__).resolve().parents[1]
+    / "db"
+    / "migrations"
+    / "0002_paragraph_keywords.sql"
+).read_text(encoding="utf-8").lower()
 
 EXPECTED_TABLES = [
     "papers",
@@ -44,3 +50,8 @@ def test_hnsw_indexes_exist() -> None:
 
 def test_vector_extension_is_created() -> None:
     assert "create extension if not exists vector" in SQL_LOWER
+
+
+def test_paragraph_keywords_migration_exists() -> None:
+    assert "alter table paragraphs" in ENRICHMENT_SQL
+    assert "keywords text[]" in ENRICHMENT_SQL

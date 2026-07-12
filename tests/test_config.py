@@ -27,10 +27,19 @@ def test_settings_defaults(monkeypatch) -> None:
     assert settings.ollama_base_url == "http://localhost:11434"
     assert settings.llm_model == "qwen2.5:7b-instruct-q4_K_M"
     assert settings.embed_dim == 1024
+    assert settings.embed_encoder == "st"
+    assert settings.runtime_mode == "production"
+    assert settings.allow_degraded_results is False
     assert settings.search_suggestion_limit == 3
     assert settings.relation_top_k == 20
     assert settings.data_dir == Path("data")
     assert settings.result_dir == Path("outputs")
+    assert settings.review_default_backend == "paddle"
+    assert settings.ingest_backend == "paddle"
+    assert settings.ocr_render_dpi == 200
+    assert settings.paper_collection_dir == Path("data/inbox/collected")
+    assert settings.paper_collection_allowed_licenses == "cc-by,cc-by-sa,cc0"
+    assert settings.paper_download_max_mb == 50
 
 
 def test_settings_env_override(monkeypatch) -> None:

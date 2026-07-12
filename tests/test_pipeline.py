@@ -1,3 +1,7 @@
+from pathlib import Path
+
+import pytest
+
 from paperrag.config import Settings
 from paperrag.ingest.embeddings import FakeEmbeddingClient
 from paperrag.ingest.llm_enrich import PassthroughEnricher
@@ -46,7 +50,15 @@ class FakeLayoutBackend:
         )
 
 
-def test_pipeline_e2e_with_fake_components() -> None:
+class FailingLlmClient:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+
+    def generate_json(self, prompt: str, schema_hint: str) -> dict[str, object]:
+        raise RuntimeError("injected LLM failure")
+
+
+def test_pipeline_e2e_with_fake_components(tmp_path: Path) -> None:
     repo = InMemoryIngestRepository()
     embedder = FakeEmbeddingClient()
     candidate_id = repo.save_paper(
@@ -63,10 +75,11 @@ def test_pipeline_e2e_with_fake_components() -> None:
         PassthroughEnricher(),
         embedder,
         settings=Settings(_env_file=None, paragraph_min_chars=20, paragraph_max_chars=500),
-        triage_func=lambda path: "digital",
     )
 
-    report = pipeline.run("paper.pdf")
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-test")
+    report = pipeline.run(str(pdf_path))
 
     assert report.paper_id is not None
     assert report.totals["paragraphs"] == 1
@@ -77,6 +90,10 @@ def test_pipeline_e2e_with_fake_components() -> None:
     assert len(repo.paragraphs) == 1
     assert len(repo.keywords) > 1
     assert len(repo.paper_keywords) > 1
+    new_paper_keywords = [
+        row for row in repo.paper_keywords if row["paper_id"] == report.paper_id
+    ]
+    assert 3 <= len(new_paper_keywords) <= 5
     assert len(repo.tables) == 1
     assert len(repo.relations) == 1
     assert repo.relations[0]["related_paper_id"] == candidate_id
@@ -84,3 +101,30 @@ def test_pipeline_e2e_with_fake_components() -> None:
     stages = {row["stage"] for row in repo.job_stages if row["status"] == "done"}
     assert stages == {STAGE_1, STAGE_2, STAGE_3, STAGE_4, STAGE_5, STAGE_6, STAGE_7, STAGE_8}
     assert not [row for row in repo.job_stages if row["status"] == "failed"]
+
+
+def test_pipeline_compensates_created_paper_after_llm_failure(tmp_path: Path) -> None:
+    repo = InMemoryIngestRepository()
+    settings = Settings(
+        _env_file=None,
+        allow_degraded_results=False,
+        paragraph_min_chars=20,
+        paragraph_max_chars=500,
+    )
+    pipeline = IngestPipeline(
+        repo,
+        FakeLayoutBackend(),
+        FailingLlmClient(settings),
+        FakeEmbeddingClient(),
+        settings=settings,
+    )
+    pdf_path = tmp_path / "failure.pdf"
+    pdf_path.write_bytes(b"%PDF-test")
+
+    with pytest.raises(RuntimeError, match="두 번 연속"):
+        pipeline.run(str(pdf_path))
+
+    assert repo.papers == {}
+    assert repo.paragraphs == {}
+    assert repo.paper_keywords == []
+    assert any(row["stage"] == STAGE_5 and row["status"] == "failed" for row in repo.job_stages)

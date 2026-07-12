@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Paper RAG 시스템 아키텍처</title>
+  <desc id="desc">PDF 업로드와 자연어 검색이 PostgreSQL pgvector 저장소를 중심으로 연결되는 온프레미스 아키텍처</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#081426"/><stop offset="1" stop-color="#102a43"/></linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#2f80ed"/><stop offset="1" stop-color="#56ccf2"/></linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#11998e"/><stop offset="1" stop-color="#38ef7d"/></linearGradient>
+    <filter id="shadow"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-opacity=".28"/></filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0,0 L12,6 L0,12 Z" fill="#8fb8e8"/></marker>
+    <style>
+      .title{font:700 42px system-ui,sans-serif;fill:#fff}.sub{font:500 22px system-ui,sans-serif;fill:#b9d4f2}
+      .head{font:700 28px system-ui,sans-serif;fill:#fff}.text{font:500 21px system-ui,sans-serif;fill:#dceafb}
+      .small{font:500 18px system-ui,sans-serif;fill:#b9d4f2}.box{stroke:#7aa7d9;stroke-width:2}
+      .arrow{stroke:#8fb8e8;stroke-width:5;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1600" height="900" rx="32" fill="url(#bg)"/>
+  <text x="80" y="80" class="title">온프레미스 논문 분석 RAG</text>
+  <text x="80" y="118" class="sub">업로드 검수와 검색·엑셀 제공을 하나의 데이터 계층으로 연결</text>
+
+  <g filter="url(#shadow)">
+    <rect x="70" y="190" width="420" height="265" rx="24" fill="#142f50" class="box"/>
+    <rect x="70" y="190" width="420" height="68" rx="24" fill="url(#blue)"/>
+    <text x="105" y="235" class="head">① 논문 등록</text>
+    <text x="105" y="305" class="text">전 페이지 이미지 변환</text>
+    <text x="105" y="343" class="text">레이아웃 · OCR · 표 영역</text>
+    <text x="105" y="381" class="text">클릭 검수 · 단락화</text>
+    <text x="105" y="419" class="small">원문 · 요약 · 키워드 · 임베딩</text>
+
+    <rect x="1110" y="190" width="420" height="265" rx="24" fill="#142f50" class="box"/>
+    <rect x="1110" y="190" width="420" height="68" rx="24" fill="url(#green)"/>
+    <text x="1145" y="235" class="head">② 논문 검색</text>
+    <text x="1145" y="305" class="text">자연어 질의</text>
+    <text x="1145" y="343" class="text">정확 키워드 우선</text>
+    <text x="1145" y="381" class="text">벡터 유사 검색</text>
+    <text x="1145" y="419" class="small">결과 안내 · 엑셀 다운로드</text>
+
+    <rect x="550" y="310" width="500" height="220" rx="30" fill="#f7fbff" stroke="#77b6ef" stroke-width="4"/>
+    <text x="800" y="375" text-anchor="middle" style="font:700 30px system-ui,sans-serif;fill:#12304e">PostgreSQL + pgvector</text>
+    <text x="800" y="420" text-anchor="middle" style="font:600 21px system-ui,sans-serif;fill:#315b7d">논문 · 단락 · 키워드 · 표</text>
+    <text x="800" y="458" text-anchor="middle" style="font:600 21px system-ui,sans-serif;fill:#315b7d">1024차원 벡터 · HNSW</text>
+    <text x="800" y="495" text-anchor="middle" style="font:500 18px system-ui,sans-serif;fill:#6685a0">정형 데이터와 의미 검색을 단일 저장소로</text>
+  </g>
+
+  <path d="M490 325 C530 325 515 370 550 390" class="arrow"/>
+  <path d="M1050 420 C1080 385 1080 335 1110 325" class="arrow"/>
+
+  <g filter="url(#shadow)">
+    <rect x="175" y="620" width="340" height="145" rx="22" fill="#17395e" class="box"/>
+    <text x="345" y="670" text-anchor="middle" class="head">문서 모델</text>
+    <text x="345" y="710" text-anchor="middle" class="text">PP-StructureV3 OCR</text>
+    <text x="345" y="745" text-anchor="middle" class="small">모든 PDF 단일 이미지 경로</text>
+
+    <rect x="630" y="620" width="340" height="145" rx="22" fill="#17395e" class="box"/>
+    <text x="800" y="670" text-anchor="middle" class="head">언어·임베딩</text>
+    <text x="800" y="710" text-anchor="middle" class="text">경량 LLM · BGE-M3</text>
+    <text x="800" y="745" text-anchor="middle" class="small">CPU 배치 · 로컬 추론</text>
+
+    <rect x="1085" y="620" width="340" height="145" rx="22" fill="#17395e" class="box"/>
+    <text x="1255" y="670" text-anchor="middle" class="head">서비스</text>
+    <text x="1255" y="710" text-anchor="middle" class="text">FastAPI · Streamlit</text>
+    <text x="1255" y="745" text-anchor="middle" class="small">폐쇄망 Docker 배포</text>
+  </g>
+  <path d="M515 650 C560 600 610 565 690 525" class="arrow"/>
+  <path d="M800 620 L800 535" class="arrow"/>
+  <path d="M1085 650 C1040 600 990 565 910 525" class="arrow"/>
+</svg>

@@ -38,12 +38,16 @@ class LayoutBlock(BaseModel):
     block_type: BlockType
     text: str
     order: int
+    bbox: tuple[float, float, float, float] | None = None
+    confidence: float | None = None
+    ocr_engine: str | None = None
 
 
 class DocumentLayout(BaseModel):
     source_path: str
     is_scanned: bool
     blocks: list[LayoutBlock] = Field(default_factory=list)
+    metrics: dict[str, int | float] = Field(default_factory=dict)
 
 
 class PaperMeta(BaseModel):

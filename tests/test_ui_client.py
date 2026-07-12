@@ -78,6 +78,48 @@ def test_download_excel_returns_bytes() -> None:
     assert content == xlsx_bytes
 
 
+def test_readiness_returns_not_ready_payload_without_hiding_503() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/ready"
+        return httpx.Response(
+            503,
+            json={
+                "status": "not_ready",
+                "errors": ["python_module:paddle"],
+                "components": {},
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        client = ApiClient("http://api.test", http_client=http_client)
+
+        report = client.readiness()
+
+    assert report["status"] == "not_ready"
+    assert report["errors"] == ["python_module:paddle"]
+
+
+def test_upload_document_and_viewer_url() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/documents"
+        assert request.url.params["backend"] == "simple"
+        assert request.content == b"%PDF-test"
+        return httpx.Response(200, json=_review_document_body())
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        client = ApiClient("http://api.test/", http_client=http_client)
+        document = client.upload_document("테스트.pdf", b"%PDF-test", "simple")
+
+    assert document.document_id == "a" * 32
+    assert client.viewer_url(document.document_id).endswith(
+        f"/documents/{document.document_id}/viewer?editable=false"
+    )
+    assert client.viewer_url(document.document_id, editable=True).endswith(
+        f"/documents/{document.document_id}/viewer?editable=true"
+    )
+
+
 def test_connect_error_is_converted_to_api_unavailable() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)
@@ -118,4 +160,20 @@ def _matched_body(match_type: str = "exact") -> dict[str, object]:
             "score": 0.77,
             "reason": "겹치는 키워드: RAG",
         },
+    }
+
+
+def _review_document_body() -> dict[str, object]:
+    return {
+        "document_id": "a" * 32,
+        "filename": "테스트.pdf",
+        "source_path": "/tmp/source.pdf",
+        "pdf_kind": "digital",
+        "backend": "simple",
+        "status": "analyzed",
+        "pages": [{"page": 1, "width": 400, "height": 500, "image_name": "page.png"}],
+        "blocks": [],
+        "warnings": [],
+        "created_at": "2026-07-12T00:00:00Z",
+        "updated_at": "2026-07-12T00:00:00Z",
     }

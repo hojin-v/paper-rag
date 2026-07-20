@@ -9,11 +9,17 @@ import pytest
 from paperrag.config import Settings
 from paperrag.review.api import get_review_service
 from paperrag.review.service import ReviewService
+from paperrag.review.store import InMemoryReviewStore
 from paperrag.search.api import app
 
 
+def _service(settings: Settings) -> ReviewService:
+    """실제 Postgres 없이 검수 API를 오프라인으로 테스트하기 위한 헬퍼(test_review_service.py와 동일)."""
+    return ReviewService(settings, store=InMemoryReviewStore(settings.review_dir))
+
+
 def test_upload_viewer_and_block_update_api(tmp_path: Path) -> None:
-    service = ReviewService(
+    service = _service(
         Settings(
             _env_file=None,
             review_dir=tmp_path / "review",
@@ -79,7 +85,7 @@ def test_submit_automatic_ocr_async_returns_task_id_without_broker(
     """auto-ocr/async는 실제 Celery 브로커 연결 없이도 task_id를 즉시 반환해야 한다."""
     import paperrag.worker.app as worker_app
 
-    service = ReviewService(
+    service = _service(
         Settings(
             _env_file=None,
             review_dir=tmp_path / "review",

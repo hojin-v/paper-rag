@@ -38,7 +38,7 @@ router = APIRouter(tags=["document-review"], dependencies=[Depends(require_api_k
 
 @lru_cache
 def get_review_service() -> ReviewService:
-    """요청마다 새로 만들지 않고 프로세스 안에서 하나의 ReviewService(=하나의 FileReviewStore)를 재사용한다."""
+    """요청마다 새로 만들지 않고 프로세스 안에서 하나의 ReviewService(=하나의 PostgresReviewStore)를 재사용한다."""
     return ReviewService(get_settings())
 
 

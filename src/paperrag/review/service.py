@@ -56,7 +56,7 @@ from paperrag.review.models import (
     ReviewDocument,
     ReviewPage,
 )
-from paperrag.review.store import FileReviewStore
+from paperrag.review.store import PostgresReviewStore, ReviewStore
 
 ALLOWED_BACKENDS = {"auto", "simple", "docling", "paddle"}
 
@@ -113,18 +113,20 @@ def _paddle_stage_worker(
 class ReviewService:
     """검수 상태 기계의 전이 로직과 자동 품질 판정을 구현하는 핵심 서비스.
 
-    각 메서드는 `FileReviewStore`에서 문서를 읽고, phase 전이 규칙을 검증한 뒤, 갱신된
-    문서를 다시 저장한다(요청 사이의 상태는 전부 store가 들고 있고 이 서비스 자체는
-    무상태다). API 라우터(`api.py`)는 이 클래스의 예외를 HTTP 상태 코드로만 변환한다.
+    각 메서드는 store(기본값 `PostgresReviewStore`)에서 문서를 읽고, phase 전이 규칙을
+    검증한 뒤, 갱신된 문서를 다시 저장한다(요청 사이의 상태는 전부 store가 들고 있고 이
+    서비스 자체는 무상태다). API 라우터(`api.py`)는 이 클래스의 예외를 HTTP 상태 코드로만
+    변환한다. 테스트는 실제 Postgres 없이 오프라인으로 검증할 수 있도록
+    `store=InMemoryReviewStore(...)`를 명시적으로 주입한다.
     """
 
     def __init__(
         self,
         settings: Settings | None = None,
-        store: FileReviewStore | None = None,
+        store: ReviewStore | None = None,
     ) -> None:
         self.settings = settings or get_settings()
-        self.store = store or FileReviewStore(self.settings.review_dir)
+        self.store = store or PostgresReviewStore(self.settings.review_dir, self.settings)
 
     def upload(self, filename: str, content: bytes, backend: str = "paddle") -> ReviewDocument:
         """PDF 바이트를 저장하고 레이아웃 검출을 실행해 새 검수 문서를 만든다.

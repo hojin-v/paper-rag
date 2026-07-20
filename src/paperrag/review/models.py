@@ -1,6 +1,6 @@
 """검수(review) 파이프라인이 주고받는 Pydantic 데이터 모델.
 
-`FileReviewStore`가 JSON으로 직렬화해 디스크에 저장하는 `ReviewDocument`가 핵심 엔티티이며,
+`review.store.ReviewStore` 구현체(운영은 `PostgresReviewStore`)가 저장하는 `ReviewDocument`가 핵심 엔티티이며,
 업로드 시점의 레이아웃 검출 결과부터 OCR·사람 검수·자동 품질 판정·DB 적재까지 문서 하나의 전체
 이력을 이 모델 하나에 계속 갱신해 담는다. `ReviewPhase`/`DocumentStatus`가 상태 기계의 단계를,
 `ReviewBlock.review_status`가 영역(블록) 단위 검수 상태를 나타낸다. 실제 전이 로직은
@@ -128,8 +128,9 @@ class ReviewBlock(BaseModel):
 class ReviewDocument(BaseModel):
     """검수 파이프라인이 다루는 문서 하나의 전체 상태를 담는 최상위 엔티티.
 
-    업로드 시 생성되어 `FileReviewStore`에 JSON으로 저장되고, 이후 모든 검수·자동화 API 호출이
-    이 객체를 읽고 갱신해 다시 저장하는 방식으로 상태가 이어진다(요청 간 상태는 디스크에만 있다).
+    업로드 시 생성되어 `ReviewStore`(운영은 `PostgresReviewStore`)에 저장되고, 이후 모든
+    검수·자동화 API 호출이 이 객체를 읽고 갱신해 다시 저장하는 방식으로 상태가 이어진다
+    (요청 간 상태는 store에만 있다).
     """
 
     document_id: str

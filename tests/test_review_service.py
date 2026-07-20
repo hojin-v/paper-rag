@@ -11,7 +11,17 @@ from paperrag.config import Settings
 from paperrag.ingest.models import DocumentLayout, LayoutBlock
 from paperrag.review.models import BlockCreate, BlockUpdate, ReviewBlock, ReviewDocument
 from paperrag.review.service import ReviewService
+from paperrag.review.store import InMemoryReviewStore
 from paperrag.review.viewer import build_viewer_html
+
+
+def _service(settings: Settings) -> ReviewService:
+    """실제 Postgres 없이 검수 서비스를 오프라인으로 테스트하기 위한 헬퍼.
+
+    운영 기본값(PostgresReviewStore)을 InMemoryReviewStore로 교체할 뿐, 구조화 메타데이터
+    저장 방식만 다르고 나머지(바이너리 자산 디렉터리 등)는 동일하게 동작한다.
+    """
+    return ReviewService(settings, store=InMemoryReviewStore(settings.review_dir))
 
 
 def test_upload_review_update_and_training_export(tmp_path: Path) -> None:
@@ -22,7 +32,7 @@ def test_upload_review_update_and_training_export(tmp_path: Path) -> None:
         paragraph_min_chars=10,
         allow_diagnostic_backends=True,
     )
-    service = ReviewService(settings)
+    service = _service(settings)
 
     document = service.upload("sample.pdf", _pdf_bytes(), backend="simple")
 
@@ -68,7 +78,7 @@ def test_upload_review_update_and_training_export(tmp_path: Path) -> None:
 
 
 def test_viewer_contains_clickable_overlay_and_ocr_text(tmp_path: Path) -> None:
-    service = ReviewService(
+    service = _service(
         Settings(
             _env_file=None,
             review_dir=tmp_path / "review",
@@ -94,7 +104,7 @@ def test_viewer_contains_clickable_overlay_and_ocr_text(tmp_path: Path) -> None:
 
 
 def test_auto_backend_always_routes_to_full_ocr_paddle(tmp_path: Path) -> None:
-    service = ReviewService(
+    service = _service(
         Settings(
             _env_file=None,
             review_dir=tmp_path / "review",
@@ -109,7 +119,7 @@ def test_auto_backend_always_routes_to_full_ocr_paddle(tmp_path: Path) -> None:
 
 
 def test_production_upload_rejects_non_ocr_backend(tmp_path: Path) -> None:
-    service = ReviewService(
+    service = _service(
         Settings(
             _env_file=None,
             review_dir=tmp_path / "review",
@@ -146,7 +156,7 @@ def test_title_quality_rejects_publisher_logo_not_supported_by_citation() -> Non
 
 
 def test_automation_quality_requires_recognized_author(tmp_path: Path) -> None:
-    service = ReviewService(Settings(_env_file=None, review_dir=tmp_path / "review"))
+    service = _service(Settings(_env_file=None, review_dir=tmp_path / "review"))
     now = datetime.now(UTC)
     document = ReviewDocument(
         document_id="missing-author",
@@ -230,7 +240,7 @@ def test_staged_layout_then_region_ocr_review(
             )
 
     monkeypatch.setattr("paperrag.review.service.get_backend", lambda name: StagedBackend())
-    service = ReviewService(
+    service = _service(
         Settings(
             _env_file=None,
             review_dir=tmp_path / "review",

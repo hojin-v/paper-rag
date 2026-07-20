@@ -1,7 +1,7 @@
 """적재 완료된 검수 문서를 사람이 평가하기 좋은 엑셀(.xlsx)로 내보내는 스크립트.
 
-이미 `/documents/{id}/ingest`까지 마쳐 DB(papers/paragraphs/keywords/paper_tables)와 로컬 검수
-저장소(FileReviewStore)에 모두 결과가 남은 문서들을 대상으로, 다음 5개 시트로 구성된 엑셀 1개와
+이미 `/documents/{id}/ingest`까지 마쳐 DB(papers/paragraphs/keywords/paper_tables)와 검수
+저장소(PostgresReviewStore)에 모두 결과가 남은 문서들을 대상으로, 다음 5개 시트로 구성된 엑셀 1개와
 같은 이름의 요약 Markdown 리포트를 만든다.
 
 - `논문요약`: 논문 1건당 1행 — 메타데이터, 블록/단락/표 개수, 대표 키워드, 자동 점검 메모.
@@ -35,7 +35,7 @@ from sqlalchemy.engine import Engine, RowMapping
 from paperrag.config import Settings, get_settings
 from paperrag.db import get_engine
 from paperrag.review.models import ReviewDocument
-from paperrag.review.store import FileReviewStore
+from paperrag.review.store import PostgresReviewStore
 
 EXCEL_CELL_LIMIT = 32_767  # 엑셀 셀 문자열 길이 제한(약 32,767자). 초과 시 잘라서 저장한다.
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")  # 헤더 행 배경(진한 남색).
@@ -89,12 +89,12 @@ def main() -> int:
 def _load_ingested_documents(
     settings: Settings, document_ids: Sequence[str]
 ) -> list[ReviewDocument]:
-    """FileReviewStore에서 검수 문서를 불러오고, 아직 DB에 적재되지 않은(paper_id 없는) 문서는 거부한다.
+    """검수 저장소에서 검수 문서를 불러오고, 아직 DB에 적재되지 않은(paper_id 없는) 문서는 거부한다.
 
     이 스크립트는 이미 적재된 결과를 DB와 조인해 보여주는 것이 목적이므로, 적재 전 문서가
     섞여 있으면 조기에 명확한 오류로 알린다.
     """
-    store = FileReviewStore(settings.review_dir)
+    store = PostgresReviewStore(settings.review_dir, settings)
     documents = [store.get(document_id) for document_id in document_ids]
     incomplete = [document.document_id for document in documents if document.paper_id is None]
     if incomplete:

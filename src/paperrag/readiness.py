@@ -147,7 +147,7 @@ def _local_components(settings: Settings) -> dict[str, ComponentStatus]:
 
     # 전체 OCR 경로가 실제로 동작하려면 세 파이썬 패키지가 설치·임포트 가능해야 한다. import만
     # 시도해도 시간이 걸릴 수 있는 무거운 패키지들이라 여기서 한 번만 확인한다.
-    for module in ("pymupdf", "paddle", "paddleocr"):
+    for module in ("pypdfium2", "paddle", "paddleocr"):
         components[f"python_module:{module}"] = _module_status(module)
 
     # 모델 파일 자체는 용량이 커서 git에 커밋하지 않고 scripts/download_paddle_models.py로 별도

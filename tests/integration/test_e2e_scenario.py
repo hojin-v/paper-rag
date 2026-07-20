@@ -16,11 +16,11 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 pgserver = pytest.importorskip("pgserver")
-pymupdf = pytest.importorskip("pymupdf")
 
+from pdf_fixtures import PdfBuilder  # noqa: E402
 from paperrag.config import Settings  # noqa: E402
 from paperrag.ingest.embeddings import EmbeddingClient  # noqa: E402
-from paperrag.ingest.layout.simple_backend import SimplePyMuPDFBackend  # noqa: E402
+from paperrag.ingest.layout.simple_backend import SimpleTextLayerBackend  # noqa: E402
 from paperrag.ingest.llm_enrich import LLMClient  # noqa: E402
 from paperrag.ingest.pipeline import IngestPipeline  # noqa: E402
 from paperrag.ingest.repository import PostgresIngestRepository  # noqa: E402
@@ -236,7 +236,7 @@ def e2e_context(pg_dsn: str, tmp_path_factory: pytest.TempPathFactory) -> Iterat
     ingest_repo = PostgresIngestRepository(settings, engine)
     pipeline = IngestPipeline(
         ingest_repo,
-        SimplePyMuPDFBackend(),
+        SimpleTextLayerBackend(),
         llm,
         embedder,
         settings=settings,
@@ -354,7 +354,7 @@ def test_section_query_filters_paragraph_sheet_against_real_postgres(
     unfiltered_rows = _paragraph_row_count(search_service, unfiltered.result_id)
     assert unfiltered_rows > 1  # 헤더 + 최소 1개 데이터 행
 
-    # SimplePyMuPDFBackend는 section_header 블록 타입을 만들지 않으므로, 이 픽스처의
+    # SimpleTextLayerBackend는 section_header 블록 타입을 만들지 않으므로, 이 픽스처의
     # 모든 논문 단락은 paragraphs.build_paragraphs의 기본 섹션명("본문") 그대로 저장된다.
     # 부분 일치 필터를 걸어도 전량이 그대로 남아야 한다.
     matching = search_service.search(query, use_llm=True, section_query="본문")
@@ -541,8 +541,7 @@ def _sqlalchemy_dsn(dsn: str) -> str:
 
 def _write_pdf(pdf_dir: Path, spec: PaperSpec) -> Path:
     path = pdf_dir / f"{spec.key}.pdf"
-    document = pymupdf.open()
-    page = document.new_page(width=595, height=842)
+    builder = PdfBuilder().add_page(595, 842)
     y = 72
     lines = [
         (spec.title, 16),
@@ -554,10 +553,9 @@ def _write_pdf(pdf_dir: Path, spec: PaperSpec) -> Path:
         *[(line, 11) for line in spec.references],
     ]
     for line, font_size in lines:
-        page.insert_text((72, y), line, fontsize=font_size)
+        builder.text(72, y, line, fontsize=font_size)
         y += 24
-    document.save(path)
-    document.close()
+    builder.save(path)
     return path
 
 

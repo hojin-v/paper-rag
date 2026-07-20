@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-import pymupdf
+from pdf_fixtures import PdfBuilder
 import pytest
 
 from paperrag.config import Settings
@@ -162,10 +162,10 @@ def _request(method: str, path: str, **kwargs: object) -> httpx.Response:
 
 
 def _pdf_bytes() -> bytes:
-    document = pymupdf.open()
-    page = document.new_page(width=400, height=500)
-    page.insert_text((40, 60), "Clickable Layout", fontsize=18)
-    page.insert_text((40, 100), "OCR result", fontsize=11)
-    content = document.tobytes()
-    document.close()
-    return content
+    return (
+        PdfBuilder()
+        .add_page(400, 500)
+        .text(40, 60, "Clickable Layout", fontsize=18)
+        .text(40, 100, "OCR result", fontsize=11)
+        .build()
+    )

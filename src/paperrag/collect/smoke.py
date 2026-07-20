@@ -30,9 +30,9 @@ def prepare_smoke_set(settings: Settings | None = None) -> list[Path]:
     if configured.paper_smoke_pages < 1:
         raise ValueError("PAPERRAG_PAPER_SMOKE_PAGES는 1 이상이어야 합니다.")
 
-    # pymupdf는 선택적 의존성(.[ingest])이라 함수 내부에서 지연 임포트한다 — 코어 패키지는 이
+    # pypdf는 선택적 의존성(.[ingest])이라 함수 내부에서 지연 임포트한다 — 코어 패키지는 이
     # 무거운 의존성 없이도 임포트 가능해야 한다(CLAUDE.md 코드 규칙).
-    import pymupdf  # type: ignore[import-not-found]
+    from pypdf import PdfReader, PdfWriter
 
     source_manifest = (
         configured.paper_collection_dir / configured.paper_collection_manifest_name
@@ -46,19 +46,17 @@ def prepare_smoke_set(settings: Settings | None = None) -> list[Path]:
         source_path = Path(str(record["local_path"]))
         if not source_path.is_file():
             raise FileNotFoundError(source_path)
-        source = pymupdf.open(source_path)
-        destination = pymupdf.open()
-        try:
-            # 논문이 smoke 페이지 수보다 짧을 수 있으므로 min()으로 실제 페이지 수를 넘지 않게 한다.
-            page_count = min(configured.paper_smoke_pages, len(source))
-            destination.insert_pdf(source, from_page=0, to_page=page_count - 1)
-            output_path = configured.paper_smoke_dir / (
-                f"{record['source_id']}-smoke-{page_count}p.pdf"
-            )
-            destination.save(output_path)
-        finally:
-            destination.close()
-            source.close()
+        reader = PdfReader(source_path)
+        writer = PdfWriter()
+        # 논문이 smoke 페이지 수보다 짧을 수 있으므로 min()으로 실제 페이지 수를 넘지 않게 한다.
+        page_count = min(configured.paper_smoke_pages, len(reader.pages))
+        for index in range(page_count):
+            writer.add_page(reader.pages[index])
+        output_path = configured.paper_smoke_dir / (
+            f"{record['source_id']}-smoke-{page_count}p.pdf"
+        )
+        with output_path.open("wb") as output_file:
+            writer.write(output_file)
         output_paths.append(output_path)
         output_records.append(
             {

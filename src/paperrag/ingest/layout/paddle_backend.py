@@ -3,11 +3,11 @@
 ADR-0002는 원래 "디지털 PDF는 Docling, 스캔 PDF는 PP-StructureV3"라는 이중 트랙을 정했지만,
 DESIGN.md §2의 2026-07-12 결정 이후 디지털 파싱 경로는 폐기되고 **모든 PDF(디지털/스캔 구분 없이)를
 페이지 이미지로 렌더링한 뒤 이 파일의 경로로만 처리**하는 것이 현재 운영 기준이다
-(Docling/SimplePyMuPDF는 비교 진단용으로만 남아 있고 운영 적재에는 쓰이지 않는다).
+(Docling/SimpleTextLayer는 비교 진단용으로만 남아 있고 운영 적재에는 쓰이지 않는다).
 
 전체 처리 순서는 다음과 같다.
 
-1. `PyMuPDF`로 모든 페이지를 이미지로 렌더링한다(`_render_pdf_pages`, DPI는
+1. `pypdfium2`로 모든 페이지를 이미지로 렌더링한다(`_render_pdf_pages`, DPI는
    `Settings.ocr_render_dpi`).
 2. `PP-DocLayout-M`으로 레이아웃(제목/저자/초록/섹션제목/본문/표/그림/참고문헌 등 12클래스,
    DESIGN.md §3 STEP 2)을 검출한다.
@@ -2001,18 +2001,23 @@ def _render_pdf_pages(
     if dpi <= 0:
         raise ValueError("PAPERRAG_OCR_RENDER_DPI must be positive.")
     try:
-        import pymupdf  # type: ignore[import-not-found]
+        import pypdfium2  # type: ignore[import-not-found]
     except ImportError as exc:
-        raise ImportError("전체 PDF OCR에는 PyMuPDF 페이지 렌더링이 필요합니다.") from exc
+        raise ImportError("전체 PDF OCR에는 pypdfium2 페이지 렌더링이 필요합니다.") from exc
 
     scale = dpi / 72.0
     pages: list[tuple[int, Path, float]] = []
-    with pymupdf.open(pdf_path) as document:
+    document = pypdfium2.PdfDocument(pdf_path)
+    try:
         for page_index, page in enumerate(document, start=1):
             image_path = output_dir / f"page-{page_index:05d}.png"
-            pixmap = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
-            pixmap.save(image_path)
+            # scale은 pypdfium2 기준 "PDF 포인트 1개당 픽셀 수"로, PyMuPDF의
+            # Matrix(scale, scale)과 동일한 의미다(둘 다 dpi/72).
+            bitmap = page.render(scale=scale, draw_annots=False)
+            bitmap.to_pil().convert("RGB").save(image_path)
             pages.append((page_index, image_path, scale))
+    finally:
+        document.close()
     return pages
 
 

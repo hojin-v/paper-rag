@@ -3,14 +3,15 @@
 # 형태로 사용한다(-c는 이미 pyproject.toml이 요구하는 패키지의 버전만 이 파일 값으로
 # 제약하고, 이 파일에 있다고 없는 패키지를 새로 설치하지는 않는다).
 #
-# 의도적으로 뺀 것: ocr/ingest-full extra(paddlepaddle==3.3.0, paddleocr[doc-parser]==3.7.0,
-# docling, kiwipiepy). 이 두 핵심 패키지는 pyproject.toml에 이미 정확한 버전(==)으로
+# 의도적으로 뺀 것: ocr/ingest-full extra의 paddlepaddle==3.3.0, paddleocr[doc-parser]==3.7.0,
+# docling, kiwipiepy. 이 두 핵심 패키지는 pyproject.toml에 이미 정확한 버전(==)으로
 # 고정돼 있어 락파일의 1차 목적(버전 미고정 해소)에서는 우선순위가 낮았고, 이 macOS
 # 개발 머신에서 pip-compile을 돌리면 paddlepaddle==3.3.0의 macOS용 배포판을 PyPI에서
-# 찾지 못해 해석 자체가 실패한다(실제 운영 배포 대상인 Linux 컨테이너에서는 정상
-# 설치됨 — docs/reports/assessments/2026-07-20-oss-deployment-risk-model-tradeoff.md
-# 참고). 이 extra의 락파일은 Linux 빌드 환경(Dockerfile 빌드 단계 등)에서 별도로
-# 생성해야 정확하다 — 아직 하지 않았다는 것을 숨기지 않고 남겨둔다.
+# 찾지 못해(Linux 컨테이너 전용 배포판) 해석 자체가 실패한다(실제 운영 배포 대상인 Linux
+# 컨테이너에서는 정상 설치됨). 이 extra의 락파일은 Linux 빌드 환경(Dockerfile 빌드 단계
+# 등)에서 별도로 생성해야 정확하다 — 아직 하지 않았다는 것을 숨기지 않고 남겨둔다.
+# ocr/ingest-full의 나머지 PDF 라이브러리(pypdfium2/pypdf/pdfplumber/pillow)는 ingest
+# extra에도 포함되어 이 락파일이 이미 정확히 고정한다.
 #
 # 갱신 방법: pip install pip-tools 후
 #   pip-compile --extra dev --extra ingest --extra embed --extra worker --extra ui \
@@ -54,8 +55,13 @@ certifi==2026.6.17
     #   httpcore
     #   httpx
     #   requests
+cffi==2.1.0
+    # via cryptography
 charset-normalizer==3.4.9
-    # via requests
+    # via
+    #   pdfminer-six
+    #   reportlab
+    #   requests
 click==8.4.2
     # via
     #   celery
@@ -71,6 +77,8 @@ click-plugins==1.1.1.2
     # via celery
 click-repl==0.3.0
     # via celery
+cryptography==49.0.0
+    # via pdfminer-six
 et-xmlfile==2.0.0
     # via openpyxl
 fastapi==0.139.2
@@ -168,10 +176,18 @@ packaging==26.2
     #   transformers
 pandas==3.0.3
     # via streamlit
+pdfminer-six==20260107
+    # via pdfplumber
+pdfplumber==0.11.10
+    # via paperrag (pyproject.toml)
 pgvector==0.5.0
     # via paperrag (pyproject.toml)
 pillow==12.3.0
-    # via streamlit
+    # via
+    #   paperrag (pyproject.toml)
+    #   pdfplumber
+    #   reportlab
+    #   streamlit
 pluggy==1.6.0
     # via pytest
 prompt-toolkit==3.0.52
@@ -184,6 +200,8 @@ psycopg-binary==3.3.4
     # via psycopg
 pyarrow==24.0.0
     # via streamlit
+pycparser==3.0
+    # via cffi
 pydantic==2.13.4
     # via
     #   fastapi
@@ -198,8 +216,12 @@ pygments==2.20.0
     # via
     #   pytest
     #   rich
-pymupdf==1.28.0
+pypdf==6.14.2
     # via paperrag (pyproject.toml)
+pypdfium2==5.12.1
+    # via
+    #   paperrag (pyproject.toml)
+    #   pdfplumber
 pytest==9.1.1
     # via paperrag (pyproject.toml)
 python-dateutil==2.9.0.post0
@@ -225,6 +247,8 @@ referencing==0.37.0
     #   jsonschema-specifications
 regex==2026.7.19
     # via transformers
+reportlab==5.0.0
+    # via paperrag (pyproject.toml)
 requests==2.34.2
     # via streamlit
 rich==15.0.0

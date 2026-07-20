@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 import zipfile
 
-import pymupdf
+from pdf_fixtures import PdfBuilder
 import pytest
 
 from paperrag.config import Settings
@@ -307,10 +307,10 @@ def test_staged_layout_then_region_ocr_review(
 
 
 def _pdf_bytes() -> bytes:
-    document = pymupdf.open()
-    page = document.new_page(width=400, height=500)
-    page.insert_text((40, 60), "Paper RAG Layout Review", fontsize=18)
-    page.insert_text((40, 100), "This paragraph is extracted for OCR review.", fontsize=11)
-    content = document.tobytes()
-    document.close()
-    return content
+    return (
+        PdfBuilder()
+        .add_page(400, 500)
+        .text(40, 60, "Paper RAG Layout Review", fontsize=18)
+        .text(40, 100, "This paragraph is extracted for OCR review.", fontsize=11)
+        .build()
+    )

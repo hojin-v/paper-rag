@@ -2,7 +2,7 @@
 
 ADR-0002는 원래 "디지털 PDF는 Docling, 스캔 PDF는 PP-StructureV3"라는 이중 트랙으로
 설계됐으나, 2026-07-12 사용자 결정으로 디지털 파싱 트랙 자체가 폐기되고 현재 운영
-기준은 모든 PDF를 PyMuPDF로 이미지화한 뒤 PP-StructureV3로 전체 OCR하는 단일 경로다
+기준은 모든 PDF를 pypdfium2로 이미지화한 뒤 PP-StructureV3로 전체 OCR하는 단일 경로다
 (DESIGN.md §2). 따라서 이 백엔드는 더 이상 운영 수집 파이프라인에서 호출되지 않으며,
 docling vs paddle 결과 비교(docs/reports/benchmarks/2026-07-04-layout-backends.md)나
 단위 테스트에서만 사용한다.

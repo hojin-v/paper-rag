@@ -1,7 +1,7 @@
 """layout 백엔드들이 공통으로 따라야 하는 최소 인터페이스 계약.
 
 STEP 2(layout)는 백엔드 교체 가능한 어댑터 구조로 구현한다는 ADR-0002의 결정에 따라,
-모든 백엔드(`SimplePyMuPDFBackend`, `DoclingBackend`, `PaddleBackend`)는 최소한
+모든 백엔드(`SimpleTextLayerBackend`, `DoclingBackend`, `PaddleBackend`)는 최소한
 `analyze(pdf_path) -> DocumentLayout` 하나만 구현하면 `get_backend()`를 통해 동일하게
 호출될 수 있다. `Protocol`을 쓴 이유는 구조적 타이핑(덕 타이핑)으로 각 백엔드 클래스가
 이 클래스를 명시적으로 상속하지 않아도 되게 하기 위함이다.

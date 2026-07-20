@@ -24,18 +24,28 @@ dependencies = [
 dev = [
     "pytest",
     "ruff",
+    "reportlab",
 ]
 ingest = [
-    "pymupdf",
+    "pypdfium2",
+    "pypdf",
+    "pdfplumber",
+    "pillow",
 ]
 ocr = [
-    "pymupdf",
+    "pypdfium2",
+    "pypdf",
+    "pdfplumber",
+    "pillow",
     "paddlepaddle==3.3.0",
     "paddleocr[doc-parser]==3.7.0",
     "kiwipiepy",
 ]
 ingest-full = [
-    "pymupdf",
+    "pypdfium2",
+    "pypdf",
+    "pdfplumber",
+    "pillow",
     "docling",
     "paddlepaddle==3.3.0",
     "paddleocr[doc-parser]==3.7.0",

@@ -2,7 +2,7 @@
 
 `paperrag.readiness.build_readiness_report`가 정의한 순서대로 다음을 확인한다.
 1) 전체 OCR 정책(paddle backend 고정), 임베딩 정책(hash 차단)과 차원, 대체 결과 차단 정책
-2) pymupdf·paddle·paddleocr 모듈이 실제로 import 되는지
+2) pypdfium2·paddle·paddleocr 모듈이 실제로 import 되는지
 3) 레이아웃·텍스트 검출·인식(및 표 인식 사용 시 분류/유선/무선) 로컬 모델 디렉터리 존재 여부
 4) (옵션) 실제 PostgreSQL 연결, BGE-M3 임베딩 서비스 health, Ollama 모델 존재 여부
 

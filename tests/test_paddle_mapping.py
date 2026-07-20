@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-import pymupdf
+from pdf_fixtures import PdfBuilder
 import pytest
 
 from paperrag.config import Settings
@@ -198,11 +198,14 @@ def test_renders_every_pdf_page_before_ocr_and_restores_pdf_coordinates(
     tmp_path: Path,
 ) -> None:
     pdf_path = tmp_path / "digital.pdf"
-    document = pymupdf.open()
-    document.new_page(width=400, height=500).insert_text((20, 30), "Digital text layer")
-    document.new_page(width=400, height=500).insert_text((20, 30), "Second page")
-    document.save(pdf_path)
-    document.close()
+    (
+        PdfBuilder()
+        .add_page(400, 500)
+        .text(20, 30, "Digital text layer")
+        .add_page(400, 500)
+        .text(20, 30, "Second page")
+        .save(pdf_path)
+    )
 
     pages = _render_pdf_pages(pdf_path, tmp_path, dpi=144)
     scaled = _scale_blocks(

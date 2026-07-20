@@ -10,36 +10,39 @@ from pathlib import Path
 from typing import Literal
 
 
-def _import_pymupdf():
+def _import_pypdfium2():
     try:
-        import pymupdf  # type: ignore[import-not-found]
+        import pypdfium2  # type: ignore[import-not-found]
     except ImportError as exc:
         raise ImportError(
-            "PyMuPDF가 설치되어 있지 않습니다. `pip install -e \".[ingest]\"`로 "
+            "pypdfium2가 설치되어 있지 않습니다. `pip install -e \".[ingest]\"`로 "
             "수집 선택 의존성을 설치한 뒤 다시 실행하세요."
         ) from exc
-    return pymupdf
+    return pypdfium2
 
 
 def classify_pdf(path: str | Path) -> Literal["digital", "scanned"]:
     """PDF의 각 페이지에 추출 가능한 텍스트 레이어가 있는지로 digital/scanned를 판별한다.
 
-    PyMuPDF로 페이지별 텍스트를 뽑아 텍스트가 있는 페이지 비율이 임계값 이상이면
+    pypdfium2로 페이지별 텍스트를 뽑아 텍스트가 있는 페이지 비율이 임계값 이상이면
     "digital", 아니면(스캔 이미지 위주) "scanned"로 분류한다. 페이지가 0장이면
     안전하게 "scanned"로 취급해 전체 OCR 경로로 넘어가게 한다.
     """
-    pymupdf = _import_pymupdf()
+    pdfium = _import_pypdfium2()
     pdf_path = str(path)
 
-    with pymupdf.open(pdf_path) as document:
+    document = pdfium.PdfDocument(pdf_path)
+    try:
         page_count = len(document)
         if page_count == 0:
             return "scanned"
 
         pages_with_text = 0
         for page in document:
-            if page.get_text("text").strip():
+            if page.get_textpage().get_text_range().strip():
                 pages_with_text += 1
+    finally:
+        document.close()
 
     # 80% 이상 페이지에 텍스트 레이어가 있으면 digital로 판정한다. 표지·백지 등
     # 일부 페이지에 텍스트가 없어도 오분류하지 않도록 완화한 임계값이다.

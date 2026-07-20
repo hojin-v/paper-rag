@@ -926,24 +926,38 @@ class ReviewService:
     ) -> None:
         """블록별로 원본 PDF에서 2배 확대 crop 이미지를 만들어 OCR 학습데이터로 ZIP에 담는다.
 
-        PyMuPDF가 없으면(옵셔널 의존성) 조용히 아무것도 쓰지 않고 돌아간다 — OCR 학습데이터
-        없이도 레이아웃 학습데이터만으로 ZIP을 만들 수 있어야 하기 때문이다.
+        pypdfium2가 없으면(옵셔널 의존성) 조용히 아무것도 쓰지 않고 돌아간다 — OCR 학습데이터
+        없이도 레이아웃 학습데이터만으로 ZIP을 만들 수 있어야 하기 때문이다. pypdfium2는
+        PyMuPDF의 `clip=Rect` 같은 임의 영역 렌더링을 지원하지 않으므로, 페이지 전체를 한 번만
+        렌더링해(페이지당 캐시) PIL로 필요한 영역만 잘라낸다 — 같은 페이지의 블록이 여러 개여도
+        페이지 렌더링은 페이지 수만큼만 일어난다.
         """
         try:
-            import pymupdf  # type: ignore[import-not-found]
+            import pypdfium2  # type: ignore[import-not-found]
         except ImportError:
             return
-        with pymupdf.open(document.source_path) as pdf:
+        pdf = pypdfium2.PdfDocument(document.source_path)
+        page_images: dict[int, object] = {}
+        try:
             for block in blocks:
                 if block.bbox is None or not block.effective_text.strip():
                     continue
                 page_index = block.page - 1
                 if page_index < 0 or page_index >= len(pdf):
                     continue
-                clip = pymupdf.Rect(*block.bbox)
-                pixmap = pdf[page_index].get_pixmap(matrix=pymupdf.Matrix(2, 2), clip=clip)
+                page_image = page_images.get(page_index)
+                if page_image is None:
+                    bitmap = pdf[page_index].render(scale=2.0, draw_annots=False)
+                    page_image = bitmap.to_pil().convert("RGB")
+                    page_images[page_index] = page_image
+                x1, y1, x2, y2 = block.bbox
+                crop = page_image.crop(
+                    (round(x1 * 2), round(y1 * 2), round(x2 * 2), round(y2 * 2))
+                )
+                buffer = BytesIO()
+                crop.save(buffer, format="PNG")
                 image_name = f"ocr/images/{document.document_id}-{block.block_id}.png"
-                archive.writestr(image_name, pixmap.tobytes("png"))
+                archive.writestr(image_name, buffer.getvalue())
                 rows.append(
                     json.dumps(
                         {
@@ -955,6 +969,8 @@ class ReviewService:
                         ensure_ascii=False,
                     )
                 )
+        finally:
+            pdf.close()
 
     def _select_backend(
         self,
@@ -982,26 +998,31 @@ class ReviewService:
         기준이 된다.
         """
         try:
-            import pymupdf  # type: ignore[import-not-found]
+            import pypdfium2  # type: ignore[import-not-found]
         except ImportError as exc:
-            raise ImportError("PDF 검수 화면에는 PyMuPDF가 필요합니다.") from exc
+            raise ImportError("PDF 검수 화면에는 pypdfium2가 필요합니다.") from exc
         scale = self.settings.review_render_dpi / 72.0
         pages: list[ReviewPage] = []
-        with pymupdf.open(source_path) as pdf:
-            for index, page in enumerate(pdf, start=1):
+        document = pypdfium2.PdfDocument(source_path)
+        try:
+            for index, page in enumerate(document, start=1):
                 image_name = f"page-{index:04d}.png"
-                pixmap = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
-                pixmap.save(directory / image_name)
+                width, height = page.get_size()
+                bitmap = page.render(scale=scale, draw_annots=False)
+                image = bitmap.to_pil().convert("RGB")
+                image.save(directory / image_name)
                 pages.append(
                     ReviewPage(
                         page=index,
-                        width=float(page.rect.width),
-                        height=float(page.rect.height),
+                        width=float(width),
+                        height=float(height),
                         image_name=image_name,
-                        image_width=int(pixmap.width),
-                        image_height=int(pixmap.height),
+                        image_width=image.width,
+                        image_height=image.height,
                     )
                 )
+        finally:
+            document.close()
         return pages
 
 

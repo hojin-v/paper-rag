@@ -2,7 +2,7 @@
 
 `get_backend(name)` 하나로 문자열 이름을 실제 백엔드 구현체로 바꿔주는 팩토리 모듈이다.
 현재 운영 경로(DESIGN.md §2, 2026-07-12 사용자 결정)는 PaddleOCR PP-StructureV3
-(`PaddleBackend`) 전체 OCR 단일 경로이며, `DoclingBackend`/`SimplePyMuPDFBackend`는
+(`PaddleBackend`) 전체 OCR 단일 경로이며, `DoclingBackend`/`SimpleTextLayerBackend`는
 디지털 파싱 트랙 폐기 이후 운영 적재에는 사용하지 않고 진단·비교·단위 테스트 용도로만
 남겨둔 것이다 (ADR-0002 참고).
 """
@@ -10,7 +10,7 @@
 from paperrag.ingest.layout.base import LayoutBackend
 from paperrag.ingest.layout.docling_backend import DoclingBackend
 from paperrag.ingest.layout.paddle_backend import PaddleBackend
-from paperrag.ingest.layout.simple_backend import SimplePyMuPDFBackend
+from paperrag.ingest.layout.simple_backend import SimpleTextLayerBackend
 
 
 def get_backend(name: str) -> LayoutBackend:
@@ -26,8 +26,8 @@ def get_backend(name: str) -> LayoutBackend:
     """
     normalized = name.strip().lower()
     if normalized == "simple":
-        # 진단용: PyMuPDF 텍스트 레이어 휴리스틱 (운영 미사용, docs/reports/benchmarks 참고)
-        return SimplePyMuPDFBackend()
+        # 진단용: pdfplumber 텍스트 레이어 휴리스틱 (운영 미사용, docs/reports/benchmarks 참고)
+        return SimpleTextLayerBackend()
     if normalized == "docling":
         # 진단용: 과거 디지털 PDF 트랙 후보, 현재는 비교/테스트 전용 (ADR-0002)
         return DoclingBackend()
@@ -41,6 +41,6 @@ __all__ = [
     "DoclingBackend",
     "LayoutBackend",
     "PaddleBackend",
-    "SimplePyMuPDFBackend",
+    "SimpleTextLayerBackend",
     "get_backend",
 ]

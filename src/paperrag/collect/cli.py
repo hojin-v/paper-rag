@@ -33,6 +33,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     source.add_argument("--work-id", action="append", dest="work_ids")
     parser.add_argument("--limit", type=int, default=settings.paper_collection_limit)
     parser.add_argument("--output", type=Path, default=settings.paper_collection_dir)
+    parser.add_argument(
+        "--language",
+        default=None,
+        help="ISO 639-1 언어 코드로 검색 결과를 좁힌다(예: ko). --work-id와는 함께 쓸 수 없다.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -42,7 +47,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         candidates = (
             discovery.get_works(args.work_ids)
             if args.work_ids
-            else discovery.search(args.query, args.limit)
+            else discovery.search(args.query, args.limit, language=args.language)
         )
         if args.dry_run:
             # dry-run은 파일을 하나도 저장하지 않고 후보 목록만 사람이 확인할 수 있게 출력한다

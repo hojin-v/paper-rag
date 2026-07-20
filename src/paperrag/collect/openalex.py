@@ -60,8 +60,20 @@ class OpenAlexClient:
         if self._owns_client:
             self.client.close()
 
-    def search(self, query: str, limit: int) -> list[PaperCandidate]:
-        """자연어 검색어로 OpenAlex Works를 검색해 라이선스 필터를 통과한 후보 최대 `limit`편을 반환한다."""
+    def search(
+        self,
+        query: str,
+        limit: int,
+        *,
+        language: str | None = None,
+    ) -> list[PaperCandidate]:
+        """자연어 검색어로 OpenAlex Works를 검색해 라이선스 필터를 통과한 후보 최대 `limit`편을 반환한다.
+
+        `language`(ISO 639-1 코드, 예: "ko")를 주면 OpenAlex의 `language` 필터를 추가해 해당
+        언어로 표기된 논문만 조회한다 — 검색어를 한국어로 써도 OpenAlex 자체 관련도 정렬은
+        언어와 무관하게 동작해 영문 논문이 섞여 나올 수 있으므로, 특정 언어 표본이 필요할 때는
+        검색어와 별개로 이 필터를 함께 써야 한다.
+        """
         if not query.strip():
             raise ValueError("논문 검색어는 비어 있을 수 없습니다.")
         if limit < 1:
@@ -76,16 +88,21 @@ class OpenAlexClient:
             100,
             max(limit, limit * self.settings.paper_collection_candidate_multiplier),
         )
+        # is_oa: 공개 접근본이 있어야 함 / has_pdf_url: 실제 PDF 링크가 있어야 함 /
+        # is_retracted:false: 철회 논문 제외 / license: 허용 라이선스만(OR 조건, '|').
+        filter_parts = [
+            "is_oa:true",
+            "has_pdf_url:true",
+            "is_retracted:false",
+            f"best_oa_location.license:{'|'.join(sorted(allowed))}",
+        ]
+        if language and language.strip():
+            filter_parts.append(f"language:{language.strip().lower()}")
         params = self._auth_params()
         params.update(
             {
                 "search": query.strip(),
-                "filter": (
-                    # is_oa: 공개 접근본이 있어야 함 / has_pdf_url: 실제 PDF 링크가 있어야 함 /
-                    # is_retracted:false: 철회 논문 제외 / license: 허용 라이선스만(OR 조건, '|').
-                    "is_oa:true,has_pdf_url:true,is_retracted:false,"
-                    f"best_oa_location.license:{'|'.join(sorted(allowed))}"
-                ),
+                "filter": ",".join(filter_parts),
                 "per-page": str(candidate_limit),
                 "select": WORK_SELECT_FIELDS,
             }

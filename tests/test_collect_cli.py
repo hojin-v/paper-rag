@@ -131,7 +131,9 @@ def test_main_enqueues_only_newly_downloaded_papers(
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
 
-        def search(self, query: str, limit: int) -> list[PaperCandidate]:
+        def search(
+            self, query: str, limit: int, *, language: str | None = None
+        ) -> list[PaperCandidate]:
             return [candidate]
 
     monkeypatch.setattr(cli, "OpenAlexClient", _FakeDiscovery)

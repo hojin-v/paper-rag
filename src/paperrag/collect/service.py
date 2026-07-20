@@ -59,10 +59,12 @@ class PaperCollector:
         query: str,
         limit: int,
         output_dir: Path | None = None,
+        *,
+        language: str | None = None,
     ) -> CollectionReport:
         """검색어로 후보를 찾아 바로 다운로드까지 수행하는 편의 메서드(발견+다운로드 한 번에)."""
         return self.collect_candidates(
-            self.discovery.search(query, limit),
+            self.discovery.search(query, limit, language=language),
             output_dir=output_dir,
         )
 

@@ -74,6 +74,22 @@ def test_openalex_search_filters_license_and_maps_candidates(tmp_path: Path) -> 
     assert "best_oa_location.license:cc-by|cc-by-sa|cc0" in captured_query["filter"][0]
 
 
+def test_openalex_search_adds_language_filter_when_given(tmp_path: Path) -> None:
+    captured_query: dict[str, list[str]] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_query.update(parse_qs(request.url.query.decode()))
+        return httpx.Response(200, json={"results": [_work()]})
+
+    settings = _settings(tmp_path)
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    discovery = OpenAlexClient(settings, client)
+
+    discovery.search("문서 레이아웃 분석", 1, language="ko")
+
+    assert "language:ko" in captured_query["filter"][0]
+
+
 def test_collects_pdf_writes_provenance_and_skips_verified_duplicate(
     tmp_path: Path,
 ) -> None:

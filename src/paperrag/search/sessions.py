@@ -32,6 +32,7 @@ class SuggestionSession:
     query_keywords: list[str]
     candidates: list[KeywordCandidate]
     expires_at: datetime
+    section_query: str | None = None
 
 
 class SuggestionSessionStore:
@@ -50,11 +51,15 @@ class SuggestionSessionStore:
         query: str,
         candidates: list[KeywordCandidate],
         query_keywords: list[str] | None = None,
+        *,
+        section_query: str | None = None,
     ) -> SuggestionSession:
         """새 suggest 세션을 발급한다.
 
         정확 매칭 실패 시 SearchService.search()가 호출하며, 새 UUID를
-        session_id로 사용해 만료 시각(now + ttl)과 함께 저장한다.
+        session_id로 사용해 만료 시각(now + ttl)과 함께 저장한다. section_query를
+        함께 저장해 두면 사용자가 이후 select()로 후보를 고를 때도 같은 섹션
+        필터가 그대로 적용된다.
         """
         self._sweep()
         session_id = str(uuid4())
@@ -64,6 +69,7 @@ class SuggestionSessionStore:
             query_keywords=list(query_keywords or []),
             candidates=list(candidates),
             expires_at=datetime.now(UTC) + self.ttl,
+            section_query=section_query,
         )
         self._sessions[session_id] = session
         return session

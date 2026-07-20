@@ -41,7 +41,13 @@ class ApiClient:
         self._client = http_client or httpx.Client(timeout=timeout_seconds)
         self._owns_client = http_client is None
 
-    def search(self, query: str) -> SearchMatched | SearchSuggest:
+    def search(
+        self,
+        query: str,
+        *,
+        use_llm: bool = False,
+        section_query: str | None = None,
+    ) -> SearchMatched | SearchSuggest:
         """자연어 질의로 `POST /search`를 호출한다.
 
         DESIGN.md §5.2의 2단계 검색 로직에 대응한다: 서버가 키워드 정확 매칭에 성공하면
@@ -49,8 +55,17 @@ class ApiClient:
         (유사 키워드 후보 + 세션 ID, 사용자 선택 대기)를 돌려준다. 이 메서드는 응답의
         `status` 값을 보고 두 스키마 중 어느 쪽으로 역직렬화할지만 결정하며, 실제 매칭
         로직은 API 서버 쪽에 있다.
+
+        기본(use_llm=False)은 서버가 LLM 없이 형태소 분석만으로 키워드를 뽑는 빠른
+        경로를 쓴다. use_llm=True면 자연어 이해를 위해 LLM을 호출하지만 훨씬 느리다
+        (직렬 처리라 동시 사용자가 있으면 대기 시간이 늘어난다). section_query를
+        주면 결과 단락을 그 섹션명을 포함하는 것만으로 좁힌다.
         """
-        response = self._request("POST", "/search", json={"query": query})
+        response = self._request(
+            "POST",
+            "/search",
+            json={"query": query, "use_llm": use_llm, "section_query": section_query},
+        )
         body = response.json()
         status = body.get("status")
         if status == "matched":

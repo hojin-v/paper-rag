@@ -123,8 +123,17 @@ class SearchRepository(Protocol):
     def top_relation(self, paper_id: int) -> tuple[int, float, str] | None:
         """연관 논문 선정 단계: 실시간 계산 없이, 미리 계산된 paper_relations에서 최고 score 1건을 조회한다."""
 
-    def paragraphs_of(self, paper_id: int) -> list[ParagraphRow]:
-        """엑셀 단락/섹션 시트용: is_topic_relevant=true인 단락만 paragraph_order 순으로 반환한다."""
+    def paragraphs_of(
+        self,
+        paper_id: int,
+        *,
+        section_query: str | None = None,
+    ) -> list[ParagraphRow]:
+        """엑셀 단락/섹션 시트용: is_topic_relevant=true인 단락만 paragraph_order 순으로 반환한다.
+
+        section_query가 주어지면 section_name에 그 문자열이(대소문자 무시) 포함된
+        단락만 반환한다 — 사용자가 검색 산출물의 특정 섹션만 받고 싶을 때 쓰는 필터다.
+        """
 
     def tables_of(self, paper_id: int) -> list[TableRow]:
         """엑셀 표 시트용: 논문에 속한 표 전체를 반환한다."""
@@ -361,7 +370,14 @@ class PostgresSearchRepository:
             str(row["relation_reason"] or ""),
         )
 
-    def paragraphs_of(self, paper_id: int) -> list[ParagraphRow]:
+    def paragraphs_of(
+        self,
+        paper_id: int,
+        *,
+        section_query: str | None = None,
+    ) -> list[ParagraphRow]:
+        # section_pattern이 NULL이면 "IS NULL" 분기가 참이 되어 필터 없이 전체를 반환하고,
+        # 값이 있으면 ILIKE(대소문자 무시 부분 일치)로 section_name을 좁힌다.
         statement = text(
             """
             SELECT
@@ -376,11 +392,21 @@ class PostgresSearchRepository:
             FROM paragraphs
             WHERE paper_id = :paper_id
               AND is_topic_relevant = true
+              AND (
+                CAST(:section_pattern AS text) IS NULL
+                OR section_name ILIKE CAST(:section_pattern AS text)
+              )
             ORDER BY paragraph_order ASC, paragraph_id ASC
             """
         )
+        section_pattern = (
+            f"%{section_query.strip()}%" if section_query and section_query.strip() else None
+        )
         with self.engine.begin() as connection:
-            rows = connection.execute(statement, {"paper_id": paper_id}).mappings().all()
+            rows = connection.execute(
+                statement,
+                {"paper_id": paper_id, "section_pattern": section_pattern},
+            ).mappings().all()
         return [
             ParagraphRow(
                 paragraph_id=int(row["paragraph_id"]),
@@ -730,12 +756,23 @@ class InMemorySearchRepository:
             str(row.get("relation_reason") or ""),
         )
 
-    def paragraphs_of(self, paper_id: int) -> list[ParagraphRow]:
+    def paragraphs_of(
+        self,
+        paper_id: int,
+        *,
+        section_query: str | None = None,
+    ) -> list[ParagraphRow]:
+        # Postgres 구현의 ILIKE '%...%'와 동일한 대소문자 무시 부분 일치를 재현한다
+        # (Kiwi normalize()를 쓰지 않는 이유: 형태소 정규화는 ILIKE와 의미가 달라
+        # 두 구현의 필터 동작이 갈릴 수 있다).
+        needle = section_query.strip().lower() if section_query and section_query.strip() else None
         paper_keywords = self.paper_keywords(paper_id)
         rows = [
             row
             for row in self.paragraph_rows
-            if int(row["paper_id"]) == paper_id and row.get("is_topic_relevant", True)
+            if int(row["paper_id"]) == paper_id
+            and row.get("is_topic_relevant", True)
+            and (needle is None or needle in str(row.get("section_name") or "").lower())
         ]
         rows.sort(key=lambda row: (int(row["paragraph_order"]), int(row["paragraph_id"])))
         return [

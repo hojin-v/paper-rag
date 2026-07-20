@@ -13,9 +13,18 @@ from pydantic import BaseModel, Field
 
 
 class SearchRequest(BaseModel):
-    """POST /search 요청 바디. 사용자가 입력한 자연어 질의 한 줄만 받는다."""
+    """POST /search 요청 바디.
+
+    query 외 두 필드는 전부 선택값이며 기본은 "빠른 검색"이다: use_llm=False면
+    Kiwi 형태소 분석 기반 키워드 추출만 쓰고 LLM을 호출하지 않는다(직렬화·지연
+    문제 회피). 자연어 의도를 더 잘 반영하고 싶을 때만 use_llm=True로 명시적으로
+    AI 경로를 요청한다. section_query를 지정하면 결과(엑셀 포함) 단락을 그
+    문자열을 포함하는 section_name으로만 좁힌다.
+    """
 
     query: str = Field(min_length=1)
+    use_llm: bool = False
+    section_query: str | None = None
 
 
 class KeywordCandidate(BaseModel):

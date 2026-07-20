@@ -20,6 +20,13 @@ class FakeLLM:
         return {"keywords": ["unknown"]}
 
 
+class RaisingLLM:
+    """호출되면 즉시 실패하는 LLM 더블. 기본 검색 경로가 LLM을 전혀 부르지 않음을 증명하는 데 쓴다."""
+
+    def generate_json(self, prompt: str, schema_hint: str) -> dict[str, Any]:
+        raise AssertionError("기본 검색 경로(use_llm=False)는 LLM을 호출하면 안 된다.")
+
+
 class StaticEmbeddingClient:
     def __init__(self) -> None:
         self.vectors = {
@@ -104,6 +111,57 @@ def test_orphan_keyword_is_not_exact_match_or_suggestion(tmp_path: Path) -> None
 
     assert isinstance(result, SearchSuggest)
     assert all(candidate.keyword_id != 5 for candidate in result.candidates)
+
+
+def test_default_search_never_calls_llm(tmp_path: Path) -> None:
+    """use_llm 기본값(False)에서는 RaisingLLM이 주입돼도 절대 호출되지 않아야 한다.
+
+    빠른 경로(형태소 분석 또는 정규식 폴백)만으로 정확 매칭까지 완료되는지 확인한다.
+    """
+    settings = Settings(
+        _env_file=None,
+        result_dir=tmp_path,
+        search_suggestion_limit=3,
+        search_similarity_threshold=0.6,
+        embed_dim=2,
+    )
+    service = SearchService(_repo(), RaisingLLM(), StaticEmbeddingClient(), settings)
+
+    result = service.search("RAG 관련 대표 논문")
+
+    assert isinstance(result, SearchMatched)
+    assert result.match_type == "exact"
+    assert result.primary_paper.paper_id == 10
+
+
+def test_use_llm_true_invokes_llm_path(tmp_path: Path) -> None:
+    """use_llm=True면 질의 문자열에 없는 키워드도 LLM이 추출한 값을 그대로 써서 매칭한다.
+
+    질의에는 "RAG"라는 문자열이 전혀 없으므로 빠른 경로(형태소 분석/정규식)로는 절대
+    "RAG"를 추출할 수 없다 — 정확 매칭이 성공했다는 것 자체가 LLM 경로가 실제로
+    쓰였다는 증거다.
+    """
+    service = _service(tmp_path, [{"keywords": ["RAG"]}])
+
+    result = service.search("이 논문에 대해서 뭔가 알려줘", use_llm=True)
+
+    assert isinstance(result, SearchMatched)
+    assert result.match_type == "exact"
+    assert result.primary_paper.paper_id == 10
+
+
+def test_extract_noun_phrases_strips_korean_particles_with_kiwi() -> None:
+    """Kiwi가 설치된 환경에서는 조사가 붙은 질의에서도 명사(구)만 뽑혀야 한다.
+
+    kiwipiepy가 없는 개발 환경(이 저장소의 기본 .venv 등)에서는 스킵된다 —
+    ingest-full/ocr extra를 설치한 환경에서만 실제로 검증된다.
+    """
+    pytest.importorskip("kiwipiepy")
+    from paperrag.search.service import _extract_noun_phrases
+
+    phrases = _extract_noun_phrases("스마트팩토리에서 이상탐지 연구")
+
+    assert "스마트팩토리" in phrases
 
 
 def _service(tmp_path: Path, llm_responses: list[dict[str, Any]] | None = None) -> SearchService:

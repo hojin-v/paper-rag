@@ -11,7 +11,11 @@ def test_search_parses_matched_response() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
         assert request.url.path == "/search"
-        assert json.loads(request.content) == {"query": "RAG 논문"}
+        assert json.loads(request.content) == {
+            "query": "RAG 논문",
+            "use_llm": False,
+            "section_query": None,
+        }
         return httpx.Response(200, json=_matched_body())
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:

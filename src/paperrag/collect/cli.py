@@ -56,11 +56,31 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     for result in report.downloaded:
         print(f"downloaded | {result.candidate.license} | {result.local_path}")
+        # 이번에 새로 받은 논문만 자동 적재 큐에 넣는다 — skipped(이미 전에 받은
+        # 논문)는 처음 받았을 때 이미 큐에 들어갔을 것이므로 중복 적재를 피한다.
+        _enqueue_ingest(result.local_path)
     for result in report.skipped:
         print(f"skipped    | {result.candidate.license} | {result.local_path}")
     for source_id, error in report.failures:
         print(f"failed     | {source_id} | {error}")
     return 1 if report.failures else 0
+
+
+def _enqueue_ingest(source_path: str) -> None:
+    """새로 다운로드한 논문 1편을 STEP 1~8 자동 적재 대기열(Celery)에 넣는다.
+
+    worker 익스트라(Celery)가 설치되어 있지 않거나 브로커(Redis)에 연결할 수
+    없어도 수집 자체는 이미 성공적으로 끝났으므로, 여기서는 예외를 삼키고
+    경고만 출력한다 — 수집 성공 여부와 적재 큐 등록 성공 여부는 서로 독립적인
+    실패 단위여야 하고, 큐 등록 실패 때문에 이미 받아둔 PDF까지 실패로 취급하면
+    안 되기 때문이다.
+    """
+    try:
+        from paperrag.worker.app import ingest_collected_paper
+
+        ingest_collected_paper.delay(source_path)
+    except Exception as exc:
+        print(f"경고: 자동 적재 큐 등록 실패({source_path}): {exc}")
 
 
 def _format_candidates(candidates: list[PaperCandidate]) -> str:

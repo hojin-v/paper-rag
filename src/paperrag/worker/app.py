@@ -46,3 +46,34 @@ def ingest_review_document(document_id: str) -> dict[str, Any]:
 
     result = ReviewService(settings).ingest(document_id)
     return result.model_dump(mode="json")
+
+
+@app.task(name="paperrag.ingest_collected_paper")
+def ingest_collected_paper(source_path: str) -> dict[str, Any]:
+    """수집된 논문 PDF 1편을 STEP 1~8 IngestPipeline(운영 backend 그대로)으로 처리하는 태스크.
+
+    `collect.cli`가 OpenAlex 등에서 새로 다운로드한 논문마다 이 태스크를 큐에
+    넣어, 사람이 별도로 `python -m paperrag.ingest`를 수동 실행하지 않아도
+    수집→적재가 자동으로 이어지게 한다("이미 서버에서 추출해놓는 것"의 추출
+    과정 자동화). `ingest_review_document`와 같은 이유로 무거운 의존성
+    (PaddleOCR, Ollama, 임베딩 클라이언트, Postgres 엔진)을 전부 함수 내부에서
+    지연 임포트한다. layout backend는 항상 운영 정책(settings.ingest_backend,
+    기본 paddle)을 그대로 따른다 — 사용자 업로드 논문의 단계별 검수 흐름
+    (review.service의 layout_review→ocr_review)과 달리, 이 경로는 사람 개입 없이
+    STEP 1~8을 한 번에 끝까지 실행한다.
+    """
+    from paperrag.ingest.embeddings import HttpEmbeddingClient
+    from paperrag.ingest.layout import get_backend
+    from paperrag.ingest.llm_enrich import OllamaClient
+    from paperrag.ingest.pipeline import IngestPipeline
+    from paperrag.ingest.repository import PostgresIngestRepository
+
+    pipeline = IngestPipeline(
+        PostgresIngestRepository(settings),
+        get_backend(settings.ingest_backend),
+        OllamaClient(settings),
+        HttpEmbeddingClient(settings),
+        settings=settings,
+    )
+    report = pipeline.run(source_path)
+    return report.model_dump(mode="json")

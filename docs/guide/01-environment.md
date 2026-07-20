@@ -40,6 +40,19 @@ pytest -q          # 전부 통과 (외부 서비스 불필요)
 ruff check src tests
 ```
 
+> **재현 가능한 설치(권장)**: `requirements-lock.txt`가 dev/ingest/embed/worker/ui
+> extra의 전이 의존성까지 정확한 버전으로 고정한다. 위 `pip install -e ".[...]"` 대신
+> `pip install -e . -c requirements-lock.txt`로 설치하면 매번 같은 버전 조합이
+> 재현된다(`-c`는 이미 요구하는 패키지의 버전만 제약하고, 락파일에 있다고 없는
+> 패키지를 새로 설치하지 않는다). ocr/ingest-full extra(paddlepaddle, paddleocr,
+> docling, kiwipiepy)는 이 락파일에 포함돼 있지 않다 — paddlepaddle/paddleocr는
+> pyproject.toml에 이미 정확한 버전(`==`)으로 고정돼 있고, 이 macOS 개발 머신에서는
+> paddlepaddle==3.3.0의 배포판을 PyPI에서 찾지 못해(Linux 컨테이너 전용 배포판)
+> pip-compile 해석 자체가 실패한다 — 실제 배포 대상인 Linux 빌드 환경에서 별도로
+> 락파일을 만들어야 정확하다(아직 하지 않음, requirements-lock.txt 상단 주석 참고).
+> 갱신: `pip install pip-tools` 후
+> `pip-compile --extra dev --extra ingest --extra embed --extra worker --extra ui --output-file=requirements-lock.txt --strip-extras pyproject.toml`.
+
 # 3단계: 환경 변수
 
 ```bash
@@ -79,3 +92,4 @@ cp .env.example .env
 - [ ] `.env` 생성 완료
 - [ ] (선택) `codex --version` 정상
 - [ ] `python scripts/preflight.py`의 실패 항목을 확인했다.
+- [ ] (배포용) `pip install -e . -c requirements-lock.txt`로 설치했다.

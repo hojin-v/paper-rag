@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import importlib.util
+import json
 import math
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -364,6 +365,60 @@ def test_section_query_filters_paragraph_sheet_against_real_postgres(
     empty = search_service.search(query, use_llm=True, section_query="이런섹션은없다")
     assert isinstance(empty, SearchMatched)
     assert _paragraph_row_count(search_service, empty.result_id) == 1
+
+
+def test_ingest_pipeline_precomputes_keyword_result_cache(
+    e2e_context: E2EContext,
+    search_service: SearchService,
+) -> None:
+    """STEP 9가 적재 중 자동으로 keyword_result_cache를 채우고, 이후 검색이 재계산
+    없이 그 캐시를 그대로 재사용하는지 실제 Postgres로 확인한다.
+    """
+    with e2e_context.engine.begin() as connection:
+        keyword_id = connection.execute(
+            text("SELECT keyword_id FROM keywords WHERE keyword = :normalized"),
+            {"normalized": "스마트팩토리"},
+        ).scalar_one()
+        cache_row = (
+            connection.execute(
+                text(
+                    """
+                    SELECT result_id, excel_path, primary_paper::text AS primary_paper
+                    FROM keyword_result_cache
+                    WHERE keyword_id = :keyword_id
+                    """
+                ),
+                {"keyword_id": keyword_id},
+            )
+            .mappings()
+            .first()
+        )
+
+    assert cache_row is not None, "STEP 9가 이 키워드의 캐시를 사전 계산해 두지 않았다."
+    assert cache_row["excel_path"]
+    cached_primary = json.loads(cache_row["primary_paper"])
+    assert cached_primary["paper_id"] == e2e_context.paper_ids["paper1"]
+
+    class RaisingOnScoreRepo(PostgresSearchRepository):
+        """캐시 히트 시 점수 재계산 경로가 전혀 실행되지 않음을 증명하는 스파이."""
+
+        def papers_for_keyword(self, keyword_id: int) -> list[Any]:
+            raise AssertionError("캐시 히트인데 papers_for_keyword가 호출됐다.")
+
+        def top_relation(self, paper_id: int) -> tuple[int, float, str] | None:
+            raise AssertionError("캐시 히트인데 top_relation이 호출됐다.")
+
+    spy_service = SearchService(
+        RaisingOnScoreRepo(e2e_context.settings, e2e_context.engine),
+        e2e_context.llm,
+        e2e_context.embedder,
+        e2e_context.settings,
+    )
+
+    result = spy_service.resolve(keyword_id, "스마트팩토리", "exact", matched_keyword="스마트팩토리")
+
+    assert result.primary_paper.paper_id == e2e_context.paper_ids["paper1"]
+    assert result.result_id == cache_row["result_id"]
 
 
 def test_references_are_excluded_from_paragraphs(e2e_context: E2EContext) -> None:

@@ -12,6 +12,7 @@ pgvector 벡터 컬럼(keywords.embedding, paragraphs.embedding)에는 HNSW
 `1 - 거리`로 변환해 코사인 유사도(0~1에 가까울수록 유사)로 사용한다.
 """
 
+import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -23,7 +24,7 @@ from sqlalchemy.engine import Engine
 from paperrag.config import Settings
 from paperrag.db import get_engine
 from paperrag.ingest.keywords import normalize
-from paperrag.search.schemas import KeywordCandidate
+from paperrag.search.schemas import KeywordCandidate, PaperSummary
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,23 @@ class TableRow:
     table_title: str | None
     table_text: str
     table_summary: str | None = None
+
+
+@dataclass(frozen=True)
+class CachedKeywordResult:
+    """keyword_result_cache 1행 — 키워드의 "기본 뷰"(섹션 필터 없음, 연관·표 포함)
+    검색 결과를 사전 계산해 둔 것.
+
+    primary_paper/related_paper는 점수·선정 사유까지 포함한 완성된 PaperSummary를
+    그대로 담는다 — 캐시의 목적이 정확히 이 점수 계산(_select_primary)과 엑셀
+    생성을 건너뛰는 것이므로, paper_id만 저장하고 나중에 다시 계산하는 방식으로는
+    캐시의 의미가 없어지기 때문이다.
+    """
+
+    result_id: str
+    excel_path: str
+    primary_paper: PaperSummary
+    related_paper: PaperSummary | None
 
 
 class SearchRepository(Protocol):
@@ -153,6 +171,24 @@ class SearchRepository(Protocol):
 
     def load_result(self, result_id: str) -> str | None:
         """result_id로 캐시된 엑셀 파일 경로를 조회한다. 없으면 None(다운로드 404 처리로 이어짐)."""
+
+    def get_cached_keyword_result(self, keyword_id: int) -> CachedKeywordResult | None:
+        """키워드의 사전 계산된 기본 뷰 결과를 조회한다. 없으면 None(그 자리에서 새로 계산)."""
+
+    def save_cached_keyword_result(
+        self,
+        keyword_id: int,
+        *,
+        result_id: str,
+        excel_path: str,
+        primary_paper: PaperSummary,
+        related_paper: PaperSummary | None,
+    ) -> None:
+        """키워드의 기본 뷰 결과를 캐시에 저장한다(이미 있으면 덮어씀).
+
+        수집 파이프라인이 새 논문을 적재한 직후(그 논문이 연결된 키워드에 한해)와,
+        검색 중 캐시가 비어 있어 새로 계산했을 때(지연 워밍) 두 경로에서 호출된다.
+        """
 
 
 class PostgresSearchRepository:
@@ -494,6 +530,82 @@ class PostgresSearchRepository:
             path = connection.execute(statement, {"result_id": result_id}).scalar_one_or_none()
         return str(path) if path else None
 
+    def get_cached_keyword_result(self, keyword_id: int) -> CachedKeywordResult | None:
+        # ::text로 캐스팅해 psycopg 드라이버·SQLAlchemy 버전에 따라 jsonb가 dict로
+        # 자동 변환되는지 여부에 의존하지 않고, 항상 문자열을 받아 json.loads로 직접
+        # 파싱한다(다른 곳의 embedding::text 패턴과 동일한 이유).
+        statement = text(
+            """
+            SELECT
+                result_id,
+                excel_path,
+                primary_paper::text AS primary_paper,
+                related_paper::text AS related_paper
+            FROM keyword_result_cache
+            WHERE keyword_id = :keyword_id
+            """
+        )
+        with self.engine.begin() as connection:
+            row = connection.execute(statement, {"keyword_id": keyword_id}).mappings().first()
+        if row is None:
+            return None
+        related_json = row["related_paper"]
+        return CachedKeywordResult(
+            result_id=str(row["result_id"]),
+            excel_path=str(row["excel_path"]),
+            primary_paper=PaperSummary.model_validate(json.loads(row["primary_paper"])),
+            related_paper=(
+                PaperSummary.model_validate(json.loads(related_json))
+                if related_json is not None
+                else None
+            ),
+        )
+
+    def save_cached_keyword_result(
+        self,
+        keyword_id: int,
+        *,
+        result_id: str,
+        excel_path: str,
+        primary_paper: PaperSummary,
+        related_paper: PaperSummary | None,
+    ) -> None:
+        statement = text(
+            """
+            INSERT INTO keyword_result_cache (
+                keyword_id, result_id, excel_path, primary_paper, related_paper, generated_at
+            )
+            VALUES (
+                :keyword_id, :result_id, :excel_path,
+                CAST(:primary_paper AS jsonb), CAST(:related_paper AS jsonb), now()
+            )
+            ON CONFLICT (keyword_id) DO UPDATE
+            SET
+                result_id = EXCLUDED.result_id,
+                excel_path = EXCLUDED.excel_path,
+                primary_paper = EXCLUDED.primary_paper,
+                related_paper = EXCLUDED.related_paper,
+                generated_at = EXCLUDED.generated_at
+            """
+        )
+        with self.engine.begin() as connection:
+            connection.execute(
+                statement,
+                {
+                    "keyword_id": keyword_id,
+                    "result_id": result_id,
+                    "excel_path": excel_path,
+                    "primary_paper": json.dumps(
+                        primary_paper.model_dump(mode="json"), ensure_ascii=False
+                    ),
+                    "related_paper": (
+                        json.dumps(related_paper.model_dump(mode="json"), ensure_ascii=False)
+                        if related_paper is not None
+                        else None
+                    ),
+                },
+            )
+
 
 class InMemorySearchRepository:
     """SearchRepository 계약을 순수 파이썬 dict/list로 재현한 테스트용 구현.
@@ -522,6 +634,7 @@ class InMemorySearchRepository:
         self.table_rows: list[dict[str, Any]] = []
         self.relation_rows: list[dict[str, Any]] = []
         self.results: dict[str, dict[str, Any]] = {}
+        self.keyword_result_cache: dict[int, CachedKeywordResult] = {}
 
         for keyword in keywords or []:
             self.add_keyword(**dict(keyword))
@@ -829,6 +942,25 @@ class InMemorySearchRepository:
         if result is None:
             return None
         return str(result["excel_path"])
+
+    def get_cached_keyword_result(self, keyword_id: int) -> CachedKeywordResult | None:
+        return self.keyword_result_cache.get(keyword_id)
+
+    def save_cached_keyword_result(
+        self,
+        keyword_id: int,
+        *,
+        result_id: str,
+        excel_path: str,
+        primary_paper: PaperSummary,
+        related_paper: PaperSummary | None,
+    ) -> None:
+        self.keyword_result_cache[keyword_id] = CachedKeywordResult(
+            result_id=result_id,
+            excel_path=excel_path,
+            primary_paper=primary_paper,
+            related_paper=related_paper,
+        )
 
 
 def _keyword_from_mapping(row: Mapping[str, Any] | None) -> KeywordRow:

@@ -49,6 +49,7 @@ STAGE_5 = "step5_llm_enrich"
 STAGE_6 = "step6_keywords"
 STAGE_7 = "step7_embed"
 STAGE_8 = "step8_relate"
+STAGE_9 = "step9_precompute_cache"
 # 초록 앞에 붙는 "Abstract:"/"초록" 같은 절 제목을 본문에서 떼어내기 위한 패턴.
 ABSTRACT_HEADING_RE = re.compile(
     r"^\s*(?:abstract|초록|요약)\s*(?:[:：.\-–—]\s*)?(?:\r?\n|\s+)",
@@ -187,7 +188,7 @@ class IngestPipeline:
                     abstract_summary,
                 ),
             )
-            paper_embedding, normalized_keywords = persisted_payload
+            paper_embedding, normalized_keywords, linked_keyword_ids = persisted_payload
 
             relations = stage(
                 STAGE_8,
@@ -203,7 +204,6 @@ class IngestPipeline:
             report.set_total("keywords", len(keyword_entries))
             report.set_total("tables", len(tables))
             report.set_total("relations", len(relations))
-            return report
         except Exception as error:
             # 보상 삭제(compensating delete): STEP 4~8 중 실패하면 이미 저장된
             # paper_id 행과 그 종속 데이터(단락/키워드 연결/표/관계)를 지워
@@ -216,6 +216,16 @@ class IngestPipeline:
                 except Exception as cleanup_error:
                     error.add_note(f"실패 논문 보상 삭제도 실패했습니다: {cleanup_error}")
             raise
+
+        # STEP 9(선택, 최선 노력): 이번에 새로 연결된 키워드들의 검색 결과 캐시를
+        # 미리 계산해 둔다. 이 블록은 의도적으로 위 try/except 바깥에 있다 —
+        # 여기서 실패해도 이미 STEP 1~8이 성공적으로 끝나 온전히 저장된 논문을
+        # 보상 삭제할 이유가 없기 때문이다(캐시 예열 실패는 다음 검색이 조금
+        # 느려질 뿐 데이터 정합성 문제가 아니다).
+        report.totals["cache_warmed_keywords"] = self._precompute_search_cache(
+            paper_id, linked_keyword_ids
+        )
+        return report
 
     @staticmethod
     def _validate_pdf_source(path: str) -> str:
@@ -337,14 +347,16 @@ class IngestPipeline:
         tables: Sequence[TableDraft],
         table_summaries: Sequence[str],
         abstract_summary: str,
-    ) -> tuple[tuple[list[float], set[str]], int]:
+    ) -> tuple[tuple[list[float], set[str], list[int]], int]:
         """STEP 7: 단락/키워드/표/논문 텍스트를 임베딩하고 전부 DB에 저장한다.
 
         임베딩 대상은 DESIGN.md §3 STEP 7 그대로다: 단락은 cleaned_text(원문이
         아니라 LLM 정제 결과), 키워드는 표시형(display), 표는 제목+요약, 논문은
         제목+초록+대표 키워드를 이어붙인 텍스트. 논문 임베딩/요약은 STEP 3에서
         이미 만든 papers 행을 UPDATE(update_paper_embedding/update_paper_enrichment)
-        하고, 단락·키워드·표는 새로 INSERT한다.
+        하고, 단락·키워드·표는 새로 INSERT한다. 반환값의 세 번째 요소(linked_keyword_ids)는
+        이번에 upsert_keyword가 돌려준 keyword_id 목록으로, STEP 9가 "이번 논문이
+        새로 연결된 키워드"만 골라 캐시를 다시 계산하는 데 그대로 쓰인다.
         """
         paragraph_vectors = self.embedder.embed(
             [paragraph.cleaned_text for paragraph in enriched_paragraphs]
@@ -392,6 +404,7 @@ class IngestPipeline:
         ]
         self.repo.save_paragraphs(paper_id, paragraph_records)
 
+        linked_keyword_ids: list[int] = []
         for (normalized, display, score), vector in zip(
             keyword_entries,
             keyword_vectors,
@@ -399,12 +412,16 @@ class IngestPipeline:
         ):
             keyword_id = self.repo.upsert_keyword(normalized, display, vector)
             self.repo.link_paper_keyword(paper_id, keyword_id, score)
+            linked_keyword_ids.append(keyword_id)
 
         for table, summary, vector in zip(tables, table_summaries, table_vectors, strict=True):
             self.repo.save_table(paper_id, table, summary, vector)
 
         saved_count = len(paragraph_records) + len(keyword_entries) + len(tables) + 1
-        return (paper_embedding, {normalized for normalized, _, _ in keyword_entries}), saved_count
+        return (
+            (paper_embedding, {normalized for normalized, _, _ in keyword_entries}, linked_keyword_ids),
+            saved_count,
+        )
 
     def _build_and_save_relations(
         self,
@@ -432,6 +449,57 @@ class IngestPipeline:
         )
         self.repo.save_relations(paper_id, relations)
         return relations, len(relations)
+
+    def _precompute_search_cache(self, paper_id: int, keyword_ids: Sequence[int]) -> int:
+        """STEP 9(선택, 최선 노력): 이번 논문이 새로 연결된 키워드마다 검색 결과
+        캐시(keyword_result_cache)를 강제로 다시 계산해 채운다.
+
+        새 논문이 어떤 키워드의 대표/연관 논문 순위를 바꿨을 수 있으므로, 그
+        키워드에 한해서만(전체 재계산이 아니라) 갱신한다 — 이 논문과 무관한
+        키워드는 데이터가 바뀌지 않았으니 건드릴 필요가 없다. `self.repo`가
+        `engine` 속성을 갖지 않으면(InMemoryIngestRepository, 즉 dry-run) 캐시
+        테이블 자체가 없는 것과 같으므로 조용히 건너뛴다. 개별 키워드 예열이
+        실패해도(임베딩 서버 일시 오류 등) 나머지 키워드는 계속 처리한다 — 이미
+        run()의 보상 삭제 대상 밖(try/except 바깥)에서 호출되므로 여기서 예외를
+        다시 던지지 않는 것이 원칙과 일치한다.
+
+        알려진 한계: STEP 8은 "이번 논문 기준" 연관 논문만 계산·저장하므로, 이번
+        논문이 기존 다른 논문의 새 연관 논문으로 등재되는 경우(양방향 조회이므로
+        가능) 그 기존 논문이 대표인 키워드의 캐시는 여기서 갱신되지 않는다.
+        (docs/reports/assessments 캐시 설계 논의에서 "간단 버전"으로 남겨둔
+        잔여 위험 — 필요성이 확인되면 역방향 연관 논문까지 갱신하는 "꼼꼼한
+        버전"으로 확장한다.)
+        """
+        engine = getattr(self.repo, "engine", None)
+        if engine is None or not keyword_ids:
+            return 0
+
+        from paperrag.search.repository import PostgresSearchRepository
+        from paperrag.search.service import SearchService
+
+        # SearchService 생성자는 llm 인자를 요구하지만, precompute_keyword_cache가
+        # 부르는 resolve()는 LLM을 전혀 호출하지 않는다(임베딩만 씀) — 그래서
+        # self.llm(PassthroughEnricher일 수도 있음)을 그대로 넘겨도 안전하다.
+        search_service = SearchService(
+            PostgresSearchRepository(self.settings, engine),
+            self.llm,
+            self.embedder,
+            self.settings,
+        )
+        self.repo.set_job_stage(paper_id, STAGE_9, "running")
+        warmed = 0
+        try:
+            for keyword_id in keyword_ids:
+                try:
+                    search_service.precompute_keyword_cache(keyword_id)
+                    warmed += 1
+                except Exception:
+                    continue
+        finally:
+            self.repo.set_job_stage(
+                paper_id, STAGE_9, "done" if warmed == len(keyword_ids) else "failed"
+            )
+        return warmed
 
 
 def _extract_meta(

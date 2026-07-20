@@ -5,8 +5,8 @@ from typing import Any
 import pytest
 
 from paperrag.config import Settings
-from paperrag.search.repository import InMemorySearchRepository
-from paperrag.search.schemas import SearchMatched, SearchSuggest
+from paperrag.search.repository import CachedKeywordResult, InMemorySearchRepository
+from paperrag.search.schemas import PaperSummary, SearchMatched, SearchSuggest
 from paperrag.search.service import SearchService
 
 
@@ -193,6 +193,122 @@ def test_include_tables_false_skips_table_lookup(tmp_path: Path) -> None:
     result = service.search("RAG 관련 대표 논문", include_tables=False)
 
     assert isinstance(result, SearchMatched)
+
+
+class RaisingEmbedder:
+    """임베딩 호출 시 즉시 실패하는 더블. 캐시 히트가 임베딩 호출조차 안 하는지 증명하는 데 쓴다."""
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        raise AssertionError("캐시 히트인데 임베딩이 호출됐다.")
+
+
+def _settings(tmp_path: Path) -> Settings:
+    return Settings(
+        _env_file=None,
+        result_dir=tmp_path,
+        search_suggestion_limit=3,
+        search_similarity_threshold=0.6,
+        embed_dim=2,
+    )
+
+
+def test_resolve_default_view_uses_cache_and_skips_scoring(tmp_path: Path) -> None:
+    """기본 뷰(섹션 필터 없음, 연관·표 포함)에서 캐시가 있으면 점수 계산·임베딩을 건너뛴다."""
+    repo = _repo()
+    repo.keyword_result_cache[1] = CachedKeywordResult(
+        result_id="r-cached-0001",
+        excel_path="/tmp/cached.xlsx",
+        primary_paper=PaperSummary(
+            paper_id=999, title="Cached Paper", score=0.42, reason="캐시된 대표 사유"
+        ),
+        related_paper=None,
+    )
+
+    def _raise(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("캐시 히트인데 점수 계산 경로가 호출됐다.")
+
+    repo.papers_for_keyword = _raise  # type: ignore[method-assign]
+    repo.top_relation = _raise  # type: ignore[method-assign]
+    service = SearchService(repo, RaisingLLM(), RaisingEmbedder(), _settings(tmp_path))
+
+    result = service.resolve(1, "RAG 관련 논문", "exact", matched_keyword="RAG")
+
+    assert result.result_id == "r-cached-0001"
+    assert result.primary_paper.paper_id == 999
+    assert result.primary_paper.title == "Cached Paper"
+
+
+def test_resolve_section_query_bypasses_cache_even_if_present(tmp_path: Path) -> None:
+    """section_query가 있으면 캐시가 있어도 쓰지 않고 새로 계산해야 한다."""
+    repo = _repo()
+    repo.keyword_result_cache[1] = CachedKeywordResult(
+        result_id="r-cached-0001",
+        excel_path="/tmp/cached.xlsx",
+        primary_paper=PaperSummary(
+            paper_id=999, title="Cached Paper", score=0.42, reason="캐시된 대표 사유"
+        ),
+        related_paper=None,
+    )
+    service = SearchService(repo, RaisingLLM(), StaticEmbeddingClient(), _settings(tmp_path))
+
+    result = service.resolve(
+        1, "RAG 관련 논문", "exact", matched_keyword="RAG", section_query="실험"
+    )
+
+    assert result.result_id != "r-cached-0001"
+    assert result.primary_paper.paper_id == 10  # _repo()의 실제 계산 결과(캐시 무시)
+
+
+def test_resolve_warms_cache_on_miss_for_default_view(tmp_path: Path) -> None:
+    """기본 뷰인데 캐시가 없으면, 계산 후 다음 검색을 위해 캐시에 저장해야 한다(지연 워밍)."""
+    repo = _repo()
+    assert repo.get_cached_keyword_result(1) is None
+    service = SearchService(repo, RaisingLLM(), StaticEmbeddingClient(), _settings(tmp_path))
+
+    result = service.resolve(1, "RAG 관련 논문", "exact", matched_keyword="RAG")
+
+    cached = repo.get_cached_keyword_result(1)
+    assert cached is not None
+    assert cached.result_id == result.result_id
+    assert cached.primary_paper.paper_id == result.primary_paper.paper_id == 10
+
+
+def test_precompute_keyword_cache_forces_refresh_when_ranking_changes(tmp_path: Path) -> None:
+    """새 논문이 더 높은 점수로 연결되면, precompute_keyword_cache가 캐시를 강제로 갱신해야 한다."""
+    repo = _repo()
+    service = SearchService(repo, RaisingLLM(), StaticEmbeddingClient(), _settings(tmp_path))
+
+    service.resolve(1, "RAG", "exact", matched_keyword="RAG")
+    original_cached = repo.get_cached_keyword_result(1)
+    assert original_cached is not None
+    assert original_cached.primary_paper.paper_id == 10
+
+    # 새 논문이 기존보다 훨씬 높은 키워드 점수·단락 유사도·제목 일치로 "RAG"에 연결된
+    # 상황을 시뮬레이션한다(=적재 파이프라인이 STEP 9에서 마주치는 상황과 동일).
+    current_year = datetime.now(UTC).year
+    repo.add_paper(paper_id=99, title="New RAG Paper", published_year=current_year, abstract="")
+    repo.add_paragraph(paper_id=99, paragraph_order=1, original_text="RAG", embedding=[1.0, 0.0])
+    repo.link_paper_keyword(paper_id=99, keyword_id=1, score=0.99)
+
+    stale_cached = repo.get_cached_keyword_result(1)
+    assert stale_cached is not None
+    assert stale_cached.primary_paper.paper_id == 10  # 아직 갱신 전
+
+    service.precompute_keyword_cache(1)
+
+    refreshed = repo.get_cached_keyword_result(1)
+    assert refreshed is not None
+    assert refreshed.primary_paper.paper_id == 99
+
+
+def test_precompute_keyword_cache_ignores_unknown_keyword(tmp_path: Path) -> None:
+    """존재하지 않는 keyword_id로 호출해도 예외 없이 조용히 무시해야 한다."""
+    repo = _repo()
+    service = SearchService(repo, RaisingLLM(), StaticEmbeddingClient(), _settings(tmp_path))
+
+    service.precompute_keyword_cache(999999)
+
+    assert repo.get_cached_keyword_result(999999) is None
 
 
 def test_extract_noun_phrases_strips_korean_particles_with_kiwi() -> None:

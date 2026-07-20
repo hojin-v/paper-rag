@@ -306,22 +306,53 @@ class SearchService:
         section_query: str | None = None,
         include_related: bool = True,
         include_tables: bool = True,
+        force_refresh: bool = False,
     ) -> SearchMatched:
         """확정된 keyword_id로 대표/연관 논문을 선정하고 엑셀을 생성해 최종 응답을 만든다.
 
-        exact/selected 두 경로 모두 마지막에 이 메서드로 합류한다. 순서는
-        (1) 매칭 키워드 벡터 임베딩 (2) 대표 논문 선정(_select_primary)
+        **캐시 우선 경로**: section_query가 없고 include_related/include_tables가
+        모두 True인 "기본 뷰" 요청이면, 먼저 keyword_result_cache에서 이 keyword_id의
+        사전 계산된 결과를 찾는다. 있으면 임베딩·점수 계산·엑셀 생성을 전부 건너뛰고
+        캐시된 PaperSummary와 엑셀 경로를 그대로 재사용한다(설명 문장만 이번 질의
+        기준으로 새로 조립). 캐시가 없거나 커스텀 옵션이 있으면 아래 순서로 새로
+        계산한다: (1) 매칭 키워드 벡터 임베딩 (2) 대표 논문 선정(_select_primary)
         (3) include_related=True면 paper_relations에서 연관 논문 조회(top_relation,
         실시간 계산 없음) — False면 이 조회 자체를 건너뛰어 related_paper가 항상
         None인 응답을 만든다 (4) ResultBundle 조립(section_query로 단락 범위 축소,
         include_tables=False면 표 조회도 건너뜀) (5) 엑셀 생성 및 result_id로 DB
-        캐시 저장, 순. section_query/include_related/include_tables 모두 대표 논문
-        선정 자체에는 영향을 주지 않는다 — 이미 확정된 결과에서 "무엇을 보여줄지"만 좁힌다.
+        캐시 저장. 기본 뷰인데 캐시가 없었던 경우, 이번에 계산한 결과를 다음
+        검색을 위해 keyword_result_cache에도 저장한다(지연 워밍 — 수집 파이프라인의
+        사전 계산을 놓친 키워드도 첫 실제 검색에서 캐시가 채워지게 하기 위함).
+        section_query/include_related/include_tables 모두 대표 논문 선정 자체에는
+        영향을 주지 않는다 — 이미 확정된 결과에서 "무엇을 보여줄지"만 좁힌다.
+        force_refresh=True면 기본 뷰라도 캐시 조회를 건너뛰고 강제로 새로 계산한다
+        (precompute_keyword_cache가 새 논문 적재 직후 캐시를 무조건 갱신할 때 사용).
         """
         keyword = self.repo.keyword_by_id(keyword_id)
         keyword_label = matched_keyword or (keyword.display_form if keyword else str(keyword_id))
-        keyword_text = keyword.keyword if keyword is not None else normalize(keyword_label)
         extracted_keywords = list(query_keywords or [keyword_label])
+
+        is_default_view = section_query is None and include_related and include_tables
+        if is_default_view and not force_refresh:
+            cached = self.repo.get_cached_keyword_result(keyword_id)
+            if cached is not None:
+                return SearchMatched(
+                    matched_keyword=keyword_label,
+                    query_keywords=extracted_keywords,
+                    match_type=match_type,
+                    explanation=_search_explanation(
+                        extracted_keywords,
+                        keyword_label,
+                        match_type,
+                        cached.primary_paper,
+                        cached.related_paper,
+                    ),
+                    result_id=cached.result_id,
+                    primary_paper=cached.primary_paper,
+                    related_paper=cached.related_paper,
+                )
+
+        keyword_text = keyword.keyword if keyword is not None else normalize(keyword_label)
         vector = self._embed_one(keyword_text or query)
         primary_row, primary_score, primary_reason = self._select_primary(
             keyword_id,
@@ -373,6 +404,14 @@ class SearchService:
             related_paper_id=related_meta.paper_id if related_meta is not None else None,
             excel_path=excel_path,
         )
+        if is_default_view:
+            self.repo.save_cached_keyword_result(
+                keyword_id,
+                result_id=result_id,
+                excel_path=excel_path,
+                primary_paper=primary_summary,
+                related_paper=related_summary,
+            )
         return SearchMatched(
             matched_keyword=keyword_label,
             query_keywords=extracted_keywords,
@@ -381,6 +420,28 @@ class SearchService:
             result_id=result_id,
             primary_paper=primary_summary,
             related_paper=related_summary,
+        )
+
+    def precompute_keyword_cache(self, keyword_id: int) -> None:
+        """이 키워드의 기본 뷰 결과를 강제로 새로 계산해 keyword_result_cache에 저장한다.
+
+        수집 파이프라인(STEP 9)이 논문을 적재한 직후, 그 논문이 이번에 새로
+        연결된 키워드마다 호출한다. 새 논문이 그 키워드의 대표/연관 논문 순위를
+        바꿨을 수 있으므로 캐시가 이미 있어도 항상 다시 계산한다(resolve의
+        force_refresh=True). 존재하지 않는 keyword_id는 조용히 무시한다(경쟁
+        상태로 키워드가 삭제된 경우 등 — 캐시 사전 계산은 최선 노력이지 필수
+        경로가 아니다).
+        """
+        keyword = self.repo.keyword_by_id(keyword_id)
+        if keyword is None:
+            return
+        self.resolve(
+            keyword_id,
+            query=keyword.display_form,
+            match_type="exact",
+            matched_keyword=keyword.display_form,
+            query_keywords=[keyword.display_form],
+            force_refresh=True,
         )
 
     def result_excel_path(self, result_id: str) -> str | None:

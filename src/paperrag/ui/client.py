@@ -47,6 +47,8 @@ class ApiClient:
         *,
         use_llm: bool = False,
         section_query: str | None = None,
+        include_related: bool = True,
+        include_tables: bool = True,
     ) -> SearchMatched | SearchSuggest:
         """자연어 질의로 `POST /search`를 호출한다.
 
@@ -59,12 +61,20 @@ class ApiClient:
         기본(use_llm=False)은 서버가 LLM 없이 형태소 분석만으로 키워드를 뽑는 빠른
         경로를 쓴다. use_llm=True면 자연어 이해를 위해 LLM을 호출하지만 훨씬 느리다
         (직렬 처리라 동시 사용자가 있으면 대기 시간이 늘어난다). section_query를
-        주면 결과 단락을 그 섹션명을 포함하는 것만으로 좁힌다.
+        주면 결과 단락을 그 섹션명을 포함하는 것만으로 좁힌다. include_related=False면
+        연관 논문 관련 항목·시트를, include_tables=False면 표 관련 시트를 아예
+        만들지 않는다(둘 다 기본은 True — 산출물 구성을 사용자가 좁히는 옵션).
         """
         response = self._request(
             "POST",
             "/search",
-            json={"query": query, "use_llm": use_llm, "section_query": section_query},
+            json={
+                "query": query,
+                "use_llm": use_llm,
+                "section_query": section_query,
+                "include_related": include_related,
+                "include_tables": include_tables,
+            },
         )
         body = response.json()
         status = body.get("status")

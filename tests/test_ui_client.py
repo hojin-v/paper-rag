@@ -15,6 +15,8 @@ def test_search_parses_matched_response() -> None:
             "query": "RAG 논문",
             "use_llm": False,
             "section_query": None,
+            "include_related": True,
+            "include_tables": True,
         }
         return httpx.Response(200, json=_matched_body())
 

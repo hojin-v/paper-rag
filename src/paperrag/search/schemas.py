@@ -15,16 +15,22 @@ from pydantic import BaseModel, Field
 class SearchRequest(BaseModel):
     """POST /search 요청 바디.
 
-    query 외 두 필드는 전부 선택값이며 기본은 "빠른 검색"이다: use_llm=False면
-    Kiwi 형태소 분석 기반 키워드 추출만 쓰고 LLM을 호출하지 않는다(직렬화·지연
-    문제 회피). 자연어 의도를 더 잘 반영하고 싶을 때만 use_llm=True로 명시적으로
-    AI 경로를 요청한다. section_query를 지정하면 결과(엑셀 포함) 단락을 그
-    문자열을 포함하는 section_name으로만 좁힌다.
+    query 외 나머지 필드는 전부 선택값이며 기본은 "빠르고 완전한 검색"이다:
+    use_llm=False면 Kiwi 형태소 분석 기반 키워드 추출만 쓰고 LLM을 호출하지
+    않는다(직렬화·지연 문제 회피). 자연어 의도를 더 잘 반영하고 싶을 때만
+    use_llm=True로 명시적으로 AI 경로를 요청한다. section_query를 지정하면
+    결과(엑셀 포함) 단락을 그 문자열을 포함하는 section_name으로만 좁힌다.
+    include_related=False면 연관 논문 조회 자체를 생략하고 응답·엑셀에서
+    연관 논문 관련 항목을 전부 제외한다. include_tables=False면 표 조회를
+    생략하고 엑셀에 표 시트를 만들지 않는다 — 둘 다 "필요 없는 산출물은
+    아예 만들지 않는다"는 사용자 맞춤 구성을 위한 것이다.
     """
 
     query: str = Field(min_length=1)
     use_llm: bool = False
     section_query: str | None = None
+    include_related: bool = True
+    include_tables: bool = True
 
 
 class KeywordCandidate(BaseModel):
@@ -156,7 +162,11 @@ class ResultBundle(BaseModel):
 
     API 응답으로 직접 노출되지 않으며, SearchService.resolve()가 조립해
     search.excel.build_excel()에 넘긴다. created_at은 엑셀 "검색 결과 요약"
-    시트의 생성 일시 칼럼에 쓰인다.
+    시트의 생성 일시 칼럼에 쓰인다. include_related/include_tables는
+    build_excel이 연관 논문 시트(정보/섹션/단락)와 표 시트(표 데이터/표 셀)를
+    아예 만들지 말지를 결정하는 플래그다 — related_info가 우연히 None인
+    경우(연관 논문이 없어서)와는 별개로, 사용자가 명시적으로 "필요 없음"을
+    선택했을 때를 나타낸다.
     """
 
     result_id: str
@@ -174,4 +184,6 @@ class ResultBundle(BaseModel):
     primary_sections: list[SectionInfo] = Field(default_factory=list)
     related_sections: list[SectionInfo] = Field(default_factory=list)
     tables: list[TableInfo] = Field(default_factory=list)
+    include_related: bool = True
+    include_tables: bool = True
     created_at: datetime

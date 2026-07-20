@@ -208,6 +208,8 @@ class SearchService:
         *,
         use_llm: bool = False,
         section_query: str | None = None,
+        include_related: bool = True,
+        include_tables: bool = True,
     ) -> SearchMatched | SearchSuggest:
         """2단계 인터랙션의 1단계 진입점: 정확 매칭을 우선 시도하고, 실패하면 유사 키워드를 제안한다.
 
@@ -218,7 +220,10 @@ class SearchService:
            Top-N을 조회하고, 세션에 저장한 뒤 SearchSuggest로 후보를 돌려준다.
            사용자는 이 후보 중 하나를 골라 select()를 다시 호출해야 한다.
         section_query가 주어지면 최종 결과(및 엑셀)의 단락을 그 섹션명을 포함하는
-        것만으로 좁힌다(세션에 저장돼 select() 이후에도 유지된다).
+        것만으로 좁힌다. include_related=False면 연관 논문 조회 자체를 건너뛰고
+        응답·엑셀에서 연관 논문 관련 항목을 전부 제외한다. include_tables=False면
+        표 조회를 건너뛰고 엑셀의 표 시트를 만들지 않는다. 셋 다 세션에 저장돼
+        select() 이후에도 그대로 유지된다.
         """
         normalized_query = normalize(query)
         keywords = self.extract_keywords(query, use_llm=use_llm)
@@ -231,6 +236,8 @@ class SearchService:
                 matched_keyword=exact_match.display_form,
                 query_keywords=keywords,
                 section_query=section_query,
+                include_related=include_related,
+                include_tables=include_tables,
             )
 
         # 정확 매칭 실패: 키워드가 하나도 추출되지 않았으면 원문 질의 전체를 임베딩해
@@ -242,7 +249,14 @@ class SearchService:
             top_k=self.settings.search_suggestion_limit,
             min_sim=self.settings.search_similarity_threshold,
         )
-        session = self.sessions.create(query, candidates, keywords, section_query=section_query)
+        session = self.sessions.create(
+            query,
+            candidates,
+            keywords,
+            section_query=section_query,
+            include_related=include_related,
+            include_tables=include_tables,
+        )
         return SearchSuggest(
             session_id=session.session_id,
             query_keywords=keywords,
@@ -259,7 +273,8 @@ class SearchService:
         세션이 없거나 만료됐거나(sessions.get가 None), 고른 keyword_id가 그 세션의
         후보 목록에 없으면(오래된 세션에 다른 후보 id를 보낸 경우 등) 모두
         SearchSessionNotFound로 취급해 404로 응답하게 한다. 세션에 저장된
-        section_query(있었다면 search() 호출 시점의 필터)도 그대로 이어받는다.
+        section_query/include_related/include_tables(있었다면 search() 호출
+        시점의 옵션)도 그대로 이어받는다.
         """
         session = self.sessions.get(session_id)
         if session is None:
@@ -277,6 +292,8 @@ class SearchService:
             matched_keyword=selected.keyword,
             query_keywords=session.query_keywords,
             section_query=session.section_query,
+            include_related=session.include_related,
+            include_tables=session.include_tables,
         )
 
     def resolve(
@@ -287,15 +304,19 @@ class SearchService:
         matched_keyword: str | None = None,
         query_keywords: list[str] | None = None,
         section_query: str | None = None,
+        include_related: bool = True,
+        include_tables: bool = True,
     ) -> SearchMatched:
         """확정된 keyword_id로 대표/연관 논문을 선정하고 엑셀을 생성해 최종 응답을 만든다.
 
         exact/selected 두 경로 모두 마지막에 이 메서드로 합류한다. 순서는
         (1) 매칭 키워드 벡터 임베딩 (2) 대표 논문 선정(_select_primary)
-        (3) paper_relations에서 연관 논문 조회(top_relation, 실시간 계산 없음)
-        (4) ResultBundle 조립(section_query로 단락 범위 축소 가능) (5) 엑셀 생성
-        및 result_id로 DB 캐시 저장, 순. section_query는 대표 논문 선정 자체에는
-        영향을 주지 않는다 — 이미 확정된 결과에서 "무엇을 보여줄지"만 좁힌다.
+        (3) include_related=True면 paper_relations에서 연관 논문 조회(top_relation,
+        실시간 계산 없음) — False면 이 조회 자체를 건너뛰어 related_paper가 항상
+        None인 응답을 만든다 (4) ResultBundle 조립(section_query로 단락 범위 축소,
+        include_tables=False면 표 조회도 건너뜀) (5) 엑셀 생성 및 result_id로 DB
+        캐시 저장, 순. section_query/include_related/include_tables 모두 대표 논문
+        선정 자체에는 영향을 주지 않는다 — 이미 확정된 결과에서 "무엇을 보여줄지"만 좁힌다.
         """
         keyword = self.repo.keyword_by_id(keyword_id)
         keyword_label = matched_keyword or (keyword.display_form if keyword else str(keyword_id))
@@ -314,7 +335,8 @@ class SearchService:
         related_meta: PaperMetaRow | None = None
         # 연관 논문은 대표 논문처럼 실시간 계산하지 않고, 수집 STEP 8에서 미리
         # 채워둔 paper_relations 중 relation_score 최고 1건을 그대로 조회한다.
-        relation = self.repo.top_relation(primary_meta.paper_id)
+        # include_related=False면 이 조회 자체를 생략해 불필요한 DB 왕복을 없앤다.
+        relation = self.repo.top_relation(primary_meta.paper_id) if include_related else None
         if relation is not None:
             related_id, relation_score, relation_reason = relation
             related_meta = self.repo.paper_meta(related_id)
@@ -337,6 +359,8 @@ class SearchService:
             related=related_summary,
             related_meta=related_meta,
             section_query=section_query,
+            include_related=include_related,
+            include_tables=include_tables,
         )
         out_path = Path(self.settings.result_dir) / f"{result_id}.xlsx"
         excel_path = build_excel(bundle, out_path)
@@ -474,13 +498,18 @@ class SearchService:
         related: PaperSummary | None,
         related_meta: PaperMetaRow | None,
         section_query: str | None = None,
+        include_related: bool = True,
+        include_tables: bool = True,
     ) -> ResultBundle:
         """대표/연관 논문의 상세 정보·단락·섹션·표를 모두 모아 엑셀 생성용 ResultBundle을 만든다.
 
         section_query가 주어지면 단락 목록을 section_name 부분 일치(대소문자 무시)로
-        좁혀서 가져온다(repo.paragraphs_of). 표/논문 키워드 목록은 필터 대상이 아니다 —
+        좁혀서 가져온다(repo.paragraphs_of). 논문 키워드 목록은 필터 대상이 아니다 —
         섹션 필터는 어디까지나 "이번 산출물에 어떤 단락 텍스트를 포함할지"를 사용자가
-        고르는 기능이라서다.
+        고르는 기능이라서다. include_tables=False면 표 조회(repo.tables_of) 자체를
+        건너뛰어 불필요한 DB 왕복을 없애고, 결과 ResultBundle.include_tables가
+        엑셀에서 표 시트를 아예 만들지 말라는 신호가 된다(related_meta가 None이면
+        연관 논문 관련 시트도 자연히 비게 되는 것과 같은 방식).
         """
         primary_info = _paper_info(primary_meta, self.repo.paper_keywords(primary_meta.paper_id))
         related_info = (
@@ -488,25 +517,27 @@ class SearchService:
             if related_meta is not None
             else None
         )
-        tables: list[TableInfo] = [
-            TableInfo(
-                role="대표",
-                table_title=row.table_title,
-                table_text=row.table_text,
-                table_summary=row.table_summary,
-            )
-            for row in self.repo.tables_of(primary_meta.paper_id)
-        ]
-        if related_meta is not None:
+        tables: list[TableInfo] = []
+        if include_tables:
             tables.extend(
                 TableInfo(
-                    role="연관",
+                    role="대표",
                     table_title=row.table_title,
                     table_text=row.table_text,
                     table_summary=row.table_summary,
                 )
-                for row in self.repo.tables_of(related_meta.paper_id)
+                for row in self.repo.tables_of(primary_meta.paper_id)
             )
+            if related_meta is not None:
+                tables.extend(
+                    TableInfo(
+                        role="연관",
+                        table_title=row.table_title,
+                        table_text=row.table_text,
+                        table_summary=row.table_summary,
+                    )
+                    for row in self.repo.tables_of(related_meta.paper_id)
+                )
         primary_paragraphs = _paragraph_infos(
             self.repo.paragraphs_of(primary_meta.paper_id, section_query=section_query)
         )
@@ -540,6 +571,8 @@ class SearchService:
             primary_sections=_section_infos(primary_paragraphs),
             related_sections=_section_infos(related_paragraphs),
             tables=tables,
+            include_related=include_related,
+            include_tables=include_tables,
             created_at=datetime.now(UTC),
         )
 

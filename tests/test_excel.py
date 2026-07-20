@@ -82,6 +82,61 @@ def test_build_excel_writes_sections_paragraphs_and_table_cells(tmp_path: Path) 
     assert table_cells["F5"].value == "0.90"
 
 
+def test_build_excel_excludes_related_sheets_when_disabled(tmp_path: Path) -> None:
+    """include_related=False면 연관 논문 관련 시트 3개가 워크북에서 아예 빠져야 한다."""
+    out_path = tmp_path / "result.xlsx"
+    bundle = _bundle().model_copy(update={"include_related": False})
+
+    excel_path = build_excel(bundle, out_path)
+
+    workbook = load_workbook(excel_path)
+    assert workbook.sheetnames == [
+        "검색 결과 요약",
+        "대표 논문 정보",
+        "대표 논문 섹션",
+        "대표 논문 단락",
+        "표 데이터",
+        "표 셀",
+    ]
+
+
+def test_build_excel_excludes_table_sheets_when_disabled(tmp_path: Path) -> None:
+    """include_tables=False면 표 관련 시트 2개가 워크북에서 아예 빠져야 한다."""
+    out_path = tmp_path / "result.xlsx"
+    bundle = _bundle().model_copy(update={"include_tables": False})
+
+    excel_path = build_excel(bundle, out_path)
+
+    workbook = load_workbook(excel_path)
+    assert workbook.sheetnames == [
+        "검색 결과 요약",
+        "대표 논문 정보",
+        "대표 논문 섹션",
+        "대표 논문 단락",
+        "연관 논문 정보",
+        "연관 논문 섹션",
+        "연관 논문 단락",
+    ]
+
+
+def test_build_excel_excludes_related_and_table_sheets_when_both_disabled(
+    tmp_path: Path,
+) -> None:
+    """둘 다 끄면 대표 논문 관련 시트 4개만 남아야 한다."""
+    out_path = tmp_path / "result.xlsx"
+    bundle = _bundle().model_copy(update={"include_related": False, "include_tables": False})
+
+    excel_path = build_excel(bundle, out_path)
+
+    workbook = load_workbook(excel_path)
+    assert workbook.sheetnames == [
+        "검색 결과 요약",
+        "대표 논문 정보",
+        "대표 논문 섹션",
+        "대표 논문 단락",
+    ]
+
+
 def _bundle() -> ResultBundle:
     return ResultBundle(
         result_id="r-20260704-abcdef12",

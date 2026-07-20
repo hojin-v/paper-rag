@@ -289,12 +289,15 @@ def _render_search(st: Any, client: ApiClient) -> None:
     3. 세션 상태(`st.session_state["result"]`/`["suggestion"]`)에 남아있는 이전 결과나
        제안을 다시 렌더링해, 위젯 상호작용으로 인한 재실행(rerun) 후에도 화면이 유지되게 한다.
 
-    "검색 옵션"에 두 가지를 선택적으로 노출한다: (1) 섹션 필터 — 산출물에 포함할
-    단락을 section_name 부분 일치로 좁힌다. (2) "AI 자연어 검색" 체크박스 — 기본은
-    꺼져 있고, 이때는 서버가 LLM 없이 형태소 분석만으로 키워드를 뽑아 빠르고 여러
-    사용자가 동시에 써도 대기열이 생기지 않는다. 켜면 LLM 자연어 이해 경로를
-    타지만 Ollama가 요청을 직렬 처리하므로(실측: 건당 18~20초) 느려질 수 있다는
-    점을 캡션으로 미리 알린다.
+    "검색 옵션"에 산출물 구성을 사용자가 직접 고를 수 있게 네 가지를 노출한다.
+    (1) 섹션 필터 — 산출물에 포함할 단락을 section_name 부분 일치로 좁힌다.
+    (2) "AI 자연어 검색" 체크박스 — 기본은 꺼져 있고, 이때는 서버가 LLM 없이
+    형태소 분석만으로 키워드를 뽑아 빠르고 여러 사용자가 동시에 써도 대기열이
+    생기지 않는다. 켜면 LLM 자연어 이해 경로를 타지만 Ollama가 요청을 직렬
+    처리하므로(실측: 건당 18~20초) 느려질 수 있다는 점을 캡션으로 미리 알린다.
+    (3) "연관 논문 포함" — 끄면 연관 논문 조회 자체를 생략하고 결과·엑셀에서
+    연관 논문 관련 내용을 뺀다. (4) "표 포함" — 끄면 표 조회를 생략하고 엑셀의
+    표 시트를 만들지 않는다.
     """
     st.subheader("논문 검색")
 
@@ -306,7 +309,8 @@ def _render_search(st: Any, client: ApiClient) -> None:
                 value=st.session_state["section_query"],
                 help="예: '실험', '방법론', '결과'. 비워두면 관련 있는 모든 단락을 결과에 포함합니다.",
             )
-            use_llm = st.checkbox(
+            option_columns = st.columns(3)
+            use_llm = option_columns[0].checkbox(
                 "AI 자연어 검색 사용",
                 value=st.session_state["use_llm"],
                 help=(
@@ -315,12 +319,24 @@ def _render_search(st: Any, client: ApiClient) -> None:
                     "동시 사용자가 있으면 건당 최소 십수 초 이상 대기할 수 있습니다."
                 ),
             )
+            include_related = option_columns[1].checkbox(
+                "연관 논문 포함",
+                value=st.session_state["include_related"],
+                help="끄면 연관 논문 조회를 생략하고 결과·엑셀에서 연관 논문 항목을 뺍니다.",
+            )
+            include_tables = option_columns[2].checkbox(
+                "표 포함",
+                value=st.session_state["include_tables"],
+                help="끄면 표 조회를 생략하고 엑셀에 표 데이터/표 셀 시트를 만들지 않습니다.",
+            )
         submitted = st.form_submit_button("검색")
 
     if submitted:
         st.session_state["query"] = query
         st.session_state["section_query"] = section_query
         st.session_state["use_llm"] = use_llm
+        st.session_state["include_related"] = include_related
+        st.session_state["include_tables"] = include_tables
         spinner_text = (
             "AI로 질의를 분석하고 있습니다(동시 사용량에 따라 오래 걸릴 수 있습니다)..."
             if use_llm
@@ -333,6 +349,8 @@ def _render_search(st: Any, client: ApiClient) -> None:
                 query,
                 use_llm=use_llm,
                 section_query=section_query.strip() or None,
+                include_related=include_related,
+                include_tables=include_tables,
             )
 
     suggestion = st.session_state.get("suggestion")
@@ -774,6 +792,8 @@ def _ensure_state(st: Any) -> None:
         "query": "",
         "section_query": "",
         "use_llm": False,
+        "include_related": True,
+        "include_tables": True,
         "result": None,
         "suggestion": None,
         "suggest_session_id": None,
@@ -794,13 +814,15 @@ def _run_search(
     *,
     use_llm: bool = False,
     section_query: str | None = None,
+    include_related: bool = True,
+    include_tables: bool = True,
 ) -> None:
     """검색 폼 제출을 처리한다: 질의 검증 → API 호출 → 정확 매칭/유사 키워드 제안 분기 저장.
 
     응답이 `SearchMatched`면 결과를 세션에 저장하고(`_set_result`), 그 외(유사 키워드 제안
     `SearchSuggest`)면 제안을 세션에 저장한다(`_set_suggestion`). 실제 렌더링은 이 함수가
-    아니라 `_render_search`가 세션 상태를 읽어서 수행한다. use_llm/section_query는
-    그대로 `client.search`에 전달된다.
+    아니라 `_render_search`가 세션 상태를 읽어서 수행한다. 옵션 인자는 그대로
+    `client.search`에 전달된다.
     """
     normalized_query = query.strip()
     if not normalized_query:
@@ -808,7 +830,13 @@ def _run_search(
         return
 
     try:
-        response = client.search(normalized_query, use_llm=use_llm, section_query=section_query)
+        response = client.search(
+            normalized_query,
+            use_llm=use_llm,
+            section_query=section_query,
+            include_related=include_related,
+            include_tables=include_tables,
+        )
     except ApiUnavailable as exc:
         st.error(str(exc))
         return

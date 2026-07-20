@@ -150,6 +150,51 @@ def test_use_llm_true_invokes_llm_path(tmp_path: Path) -> None:
     assert result.primary_paper.paper_id == 10
 
 
+def test_include_related_false_skips_relation_lookup_and_response(tmp_path: Path) -> None:
+    """include_related=False면 top_relation 조회 자체를 건너뛰고 related_paper도 None이어야 한다."""
+    repo = _repo()
+
+    def _raise_if_called(paper_id: int) -> tuple[int, float, str] | None:
+        raise AssertionError("include_related=False인데 top_relation이 호출됐다.")
+
+    repo.top_relation = _raise_if_called  # type: ignore[method-assign]
+    settings = Settings(
+        _env_file=None,
+        result_dir=tmp_path,
+        search_suggestion_limit=3,
+        search_similarity_threshold=0.6,
+        embed_dim=2,
+    )
+    service = SearchService(repo, RaisingLLM(), StaticEmbeddingClient(), settings)
+
+    result = service.search("RAG 관련 대표 논문", include_related=False)
+
+    assert isinstance(result, SearchMatched)
+    assert result.related_paper is None
+
+
+def test_include_tables_false_skips_table_lookup(tmp_path: Path) -> None:
+    """include_tables=False면 tables_of 조회 자체를 건너뛰어야 한다."""
+    repo = _repo()
+
+    def _raise_if_called(paper_id: int) -> list[Any]:
+        raise AssertionError("include_tables=False인데 tables_of가 호출됐다.")
+
+    repo.tables_of = _raise_if_called  # type: ignore[method-assign]
+    settings = Settings(
+        _env_file=None,
+        result_dir=tmp_path,
+        search_suggestion_limit=3,
+        search_similarity_threshold=0.6,
+        embed_dim=2,
+    )
+    service = SearchService(repo, RaisingLLM(), StaticEmbeddingClient(), settings)
+
+    result = service.search("RAG 관련 대표 논문", include_tables=False)
+
+    assert isinstance(result, SearchMatched)
+
+
 def test_extract_noun_phrases_strips_korean_particles_with_kiwi() -> None:
     """Kiwi가 설치된 환경에서는 조사가 붙은 질의에서도 명사(구)만 뽑혀야 한다.
 

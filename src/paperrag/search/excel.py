@@ -1,10 +1,12 @@
-"""검색 결과(ResultBundle)를 6개 시트 구성의 xlsx 파일로 직렬화한다.
+"""검색 결과(ResultBundle)를 xlsx 파일로 직렬화한다.
 
 DESIGN.md §5.3에 정의된 시트 구성: ① 검색 결과 요약 ② 대표 논문 정보 ③ 대표 논문 섹션
 ④ 대표 논문 단락 ⑤ 연관 논문 정보 ⑥ 연관 논문 섹션 ⑦ 연관 논문 단락 ⑧ 표 데이터 ⑨ 표 셀.
-(설계서 요약은 6개 범주로 묶어 표현하지만 실제 워크북은 섹션/단락/표 셀 시트가 별도로 나뉘어
-총 9개 시트를 만든다.) 모든 시트는 헤더 행 고정(freeze_panes)과 원문 셀 줄바꿈, 열 너비
-자동 조정을 공통 적용한다.
+(설계서 요약은 6개 범주로 묶어 표현하지만 실제 워크북은 섹션/단락/표 셀 시트가 별도로 나뉜다.)
+기본값(모든 include_* 옵션 켜짐)에서는 9개 시트가 전부 만들어지지만, ResultBundle의
+include_related=False/include_tables=False로 사용자가 산출물 구성을 좁히면 해당 시트
+자체가 워크북에서 빠진다(⑤~⑦ 또는 ⑧~⑨). 모든 시트는 헤더 행 고정(freeze_panes)과
+원문 셀 줄바꿈, 열 너비 자동 조정을 공통 적용한다.
 """
 
 from collections.abc import Iterable
@@ -57,46 +59,43 @@ def build_excel(data: ResultBundle, out_path: str | Path) -> str:
     primary_paragraph_sheet = workbook.create_sheet("대표 논문 단락")
     _write_paragraphs(primary_paragraph_sheet, data.primary_paragraphs)
 
-    # 시트 5: 연관 논문 정보 — 대표 논문과 같은 형식이되, 연관 점수/사유 열이 추가된다.
-    # 연관 논문이 없으면(data.related_info=None) 헤더만 있는 빈 시트가 된다.
-    related_sheet = workbook.create_sheet("연관 논문 정보")
-    _write_paper_info(
-        related_sheet,
-        data.related_info,
-        relation_score=data.related_paper.score if data.related_paper else None,
-        relation_reason=data.related_paper.reason if data.related_paper else None,
-    )
+    paragraph_sheet_names = ["대표 논문 섹션", "대표 논문 단락"]
 
-    # 시트 6: 연관 논문 섹션.
-    related_section_sheet = workbook.create_sheet("연관 논문 섹션")
-    _write_sections(related_section_sheet, data.related_sections)
+    # 시트 5~7: 연관 논문 정보/섹션/단락. data.include_related=False면(사용자가
+    # 명시적으로 "연관 논문 제외"를 선택) 이 세 시트 자체를 만들지 않는다.
+    # (연관 논문이 우연히 없는 경우와는 다르다 — 그때는 include_related=True인 채로
+    # data.related_info=None만 되어 헤더만 있는 빈 시트가 그대로 유지된다.)
+    if data.include_related:
+        related_sheet = workbook.create_sheet("연관 논문 정보")
+        _write_paper_info(
+            related_sheet,
+            data.related_info,
+            relation_score=data.related_paper.score if data.related_paper else None,
+            relation_reason=data.related_paper.reason if data.related_paper else None,
+        )
+        related_section_sheet = workbook.create_sheet("연관 논문 섹션")
+        _write_sections(related_section_sheet, data.related_sections)
+        related_paragraph_sheet = workbook.create_sheet("연관 논문 단락")
+        _write_paragraphs(related_paragraph_sheet, data.related_paragraphs)
+        paragraph_sheet_names.extend(["연관 논문 섹션", "연관 논문 단락"])
 
-    # 시트 7: 연관 논문 단락.
-    related_paragraph_sheet = workbook.create_sheet("연관 논문 단락")
-    _write_paragraphs(related_paragraph_sheet, data.related_paragraphs)
-
-    # 시트 8: 표 데이터 — 대표/연관 논문에 속한 표를 role로 구분해 한 시트에 모은다.
-    tables_sheet = workbook.create_sheet("표 데이터")
-    _write_tables(tables_sheet, data.tables)
-
-    # 시트 9: 표 셀 — 표 데이터 시트의 table_text(Markdown 표)를 행/열 단위 셀로
-    # 다시 풀어낸 상세 뷰. 스프레드시트에서 표 내용을 셀 단위로 다루기 쉽게 하기 위함.
-    table_cells_sheet = workbook.create_sheet("표 셀")
-    _write_table_cells(table_cells_sheet, data.tables)
+    # 시트 8~9: 표 데이터/표 셀. data.include_tables=False면 표 시트 자체를 만들지 않는다.
+    tables_sheet: Worksheet | None = None
+    if data.include_tables:
+        tables_sheet = workbook.create_sheet("표 데이터")
+        _write_tables(tables_sheet, data.tables)
+        table_cells_sheet = workbook.create_sheet("표 셀")
+        _write_table_cells(table_cells_sheet, data.tables)
 
     # 공통 서식: 모든 시트에 헤더 강조 + 줄바꿈 + 열 너비 자동 조정을 적용한 뒤,
     # 원문/정제문이 긴 섹션·단락 시트와 표 내용 시트는 해당 열 너비를 고정폭으로 덮어써
     # 자동 조정 결과가 지나치게 좁아지는 것을 막는다.
     for sheet in workbook.worksheets:
         _style_sheet(sheet)
-    for sheet_name in (
-        "대표 논문 섹션",
-        "대표 논문 단락",
-        "연관 논문 섹션",
-        "연관 논문 단락",
-    ):
+    for sheet_name in paragraph_sheet_names:
         _style_paragraph_sheet(workbook[sheet_name])
-    _style_table_sheet(tables_sheet)
+    if tables_sheet is not None:
+        _style_table_sheet(tables_sheet)
 
     workbook.save(path)
     return str(path)

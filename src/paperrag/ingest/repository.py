@@ -480,6 +480,15 @@ class PostgresIngestRepository:
 
 
 class InMemoryIngestRepository:
+    """DB 없이 dry-run/테스트에서 쓰는 IngestRepository 구현. 전부 프로세스 메모리 dict/list에 저장한다.
+
+    `cli.py --dry-run`에서 사용되며, PostgresIngestRepository와 같은 STEP
+    저장 순서를 흉내 내지만 SQL 트랜잭션 대신 파이썬 dict 조작으로 대체한다.
+    upsert_keyword는 정확한 정규화 문자열 일치만 병합하고, 운영 구현에 있는
+    임베딩 유사도 0.95 기준 동의어 병합은 구현하지 않는다(오프라인 테스트에서는
+    임베딩 유사도 검색 인프라가 없기 때문).
+    """
+
     def __init__(self) -> None:
         self.papers: dict[int, dict[str, Any]] = {}
         self.paragraphs: dict[int, dict[str, Any]] = {}
@@ -516,6 +525,8 @@ class InMemoryIngestRepository:
         return paper_id
 
     def delete_paper(self, paper_id: int) -> None:
+        # PostgresIngestRepository.delete_paper와 달리 FK CASCADE가 없으므로
+        # 논문·단락·키워드 연결·표·관계를 여기서 직접 하나씩 걸러낸다(보상 삭제).
         self.papers.pop(paper_id, None)
         self.paragraphs = {
             row_id: row
@@ -670,12 +681,23 @@ class InMemoryIngestRepository:
 
 
 def _vector_literal(vector: Sequence[float] | None) -> str | None:
+    """파이썬 float 리스트를 pgvector가 이해하는 "[v1,v2,...]" 텍스트 리터럴로 바꾼다.
+
+    이 문자열은 SQL의 CAST(:param AS vector)로 전달되며, None이면 그대로 NULL로
+    바인딩되어 임베딩이 아직 없는 상태(STEP 3 시점의 papers.paper_embedding 등)를
+    표현한다.
+    """
     if vector is None:
         return None
     return "[" + ",".join(f"{float(value):.9g}" for value in vector) + "]"
 
 
 def _parse_vector(value: Any) -> list[float]:
+    """pgvector 컬럼을 ::text로 캐스팅해 읽은 "[v1,v2,...]" 문자열을 float 리스트로 되돌린다.
+
+    STEP 8의 list_relation_candidates가 후보 논문 임베딩을 relations.cosine에
+    넘기기 전에 사용한다.
+    """
     if value is None:
         return []
     if isinstance(value, list):

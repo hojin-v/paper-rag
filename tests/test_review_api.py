@@ -1,8 +1,10 @@
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pymupdf
+import pytest
 
 from paperrag.config import Settings
 from paperrag.review.api import get_review_service
@@ -57,6 +59,91 @@ def test_upload_viewer_and_block_update_api(tmp_path: Path) -> None:
         assert update.json()["blocks"][0]["corrected_text"] == "교정 결과"
     finally:
         app.dependency_overrides.clear()
+
+
+class _FakeAsyncTask:
+    """Celery 태스크의 `.delay(...)`만 흉내 내는 페이크. 브로커(Redis) 없이도 테스트 가능하게 한다."""
+
+    def __init__(self, task_id: str = "fake-task-123") -> None:
+        self.id = task_id
+        self.calls: list[tuple[Any, ...]] = []
+
+    def delay(self, *args: Any) -> "_FakeAsyncTask":
+        self.calls.append(args)
+        return self
+
+
+def test_submit_automatic_ocr_async_returns_task_id_without_broker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """auto-ocr/async는 실제 Celery 브로커 연결 없이도 task_id를 즉시 반환해야 한다."""
+    import paperrag.worker.app as worker_app
+
+    service = ReviewService(
+        Settings(
+            _env_file=None,
+            review_dir=tmp_path / "review",
+            review_render_dpi=72,
+            allow_diagnostic_backends=True,
+        )
+    )
+    app.dependency_overrides[get_review_service] = lambda: service
+    fake_task = _FakeAsyncTask()
+    monkeypatch.setattr(worker_app, "run_automatic_ocr_task", fake_task)
+    try:
+        upload = _request(
+            "POST",
+            "/documents",
+            params={"filename": "sample.pdf", "backend": "simple"},
+            content=_pdf_bytes(),
+            headers={"content-type": "application/pdf"},
+        )
+        document_id = upload.json()["document_id"]
+
+        response = _request("POST", f"/documents/{document_id}/auto-ocr/async")
+
+        assert response.status_code == 200
+        assert response.json() == {"task_id": "fake-task-123"}
+        assert fake_task.calls == [(document_id,)]
+
+        missing = _request("POST", "/documents/does-not-exist/auto-ocr/async")
+        assert missing.status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    ("celery_state", "celery_result", "expected_status", "expected_key"),
+    [
+        ("PENDING", None, "pending", None),
+        ("STARTED", None, "started", None),
+        ("SUCCESS", {"document_id": "doc-1", "phase": "ready_to_ingest"}, "success", "result"),
+        ("FAILURE", "boom", "failure", "error"),
+    ],
+)
+def test_job_status_reports_celery_states(
+    monkeypatch: pytest.MonkeyPatch,
+    celery_state: str,
+    celery_result: Any,
+    expected_status: str,
+    expected_key: str | None,
+) -> None:
+    """GET /jobs/{task_id}가 Celery의 네 가지 상태를 JobStatus로 올바르게 옮기는지 확인한다."""
+
+    class _FakeAsyncResult:
+        def __init__(self, task_id: str, app: Any = None) -> None:
+            self.state = celery_state
+            self.result = celery_result
+
+    monkeypatch.setattr("celery.result.AsyncResult", _FakeAsyncResult)
+
+    response = _request("GET", "/jobs/some-task-id")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == expected_status
+    if expected_key is not None:
+        assert body[expected_key] == celery_result
 
 
 def _request(method: str, path: str, **kwargs: object) -> httpx.Response:

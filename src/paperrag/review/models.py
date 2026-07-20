@@ -8,7 +8,7 @@
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -180,3 +180,26 @@ class IngestedDocument(BaseModel):
     paper_id: int
     status: Literal["ingested"] = "ingested"
     totals: dict[str, int] = Field(default_factory=dict)  # 적재된 논문/단락/요약/키워드 등 개수 통계
+
+
+class TaskSubmitted(BaseModel):
+    """비동기 작업 제출(`POST /documents/{id}/auto-ocr/async` 등) 성공 응답.
+
+    실제 처리 상태는 이 task_id로 `GET /jobs/{task_id}`를 폴링해 확인한다.
+    """
+
+    task_id: str
+
+
+class JobStatus(BaseModel):
+    """`GET /jobs/{task_id}` 응답 — Celery 작업의 진행 상태.
+
+    Celery의 PENDING/STARTED/SUCCESS/FAILURE를 그대로 노출한다(더 세분화된 단계별
+    진행률은 아직 없다). status="success"면 result에 갱신된 ReviewDocument(JSON)가,
+    "failure"면 error에 예외 메시지가 담긴다.
+    """
+
+    task_id: str
+    status: Literal["pending", "started", "success", "failure"]
+    result: dict[str, Any] | None = None
+    error: str | None = None

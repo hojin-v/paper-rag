@@ -12,6 +12,7 @@
 이 모듈은 `paperrag.ui.client.ApiClient`를 통해서만 백엔드와 통신한다(직접 DB 접근 없음).
 """
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -572,14 +573,37 @@ def _render_upload_review(st: Any, client: ApiClient) -> None:
     )
 
     if document.phase == "layout_review":
-        if st.button("다음 자동화 단계: 영역별 OCR·품질 판정 실행", type="primary"):
+        # 200 DPI 논문 1페이지가 5분 이상 걸릴 수 있다는 실측(docs/guide/10) 때문에
+        # 동기 호출 대신 Celery 큐에 제출하고 폴링한다. 진행 중인 task_id를
+        # session_state에 들고 있다가, 완료 전까지는 짧게 대기한 뒤 자동으로
+        # rerun해 사람이 수동 새로고침을 누르지 않아도 진행 상황이 갱신되게 한다.
+        ocr_task_key = f"ocr_task_{document.document_id}"
+        pending_task_id = st.session_state.get(ocr_task_key)
+        if pending_task_id:
             try:
-                with st.spinner("일반 영역 OCR, 표 구조 OCR과 자동 품질 판정을 실행합니다..."):
-                    client.run_automatic_ocr(document.document_id)
+                status = client.job_status(pending_task_id)
             except (ApiUnavailable, httpx.HTTPError) as exc:
-                st.error(f"자동 OCR 실행에 실패했습니다: {exc}")
+                st.error(f"작업 상태 조회에 실패했습니다: {exc}")
+                st.session_state[ocr_task_key] = None
             else:
-                st.success("자동 OCR과 품질 판정을 완료했습니다.")
+                if status["status"] in {"pending", "started"}:
+                    st.info("영역별 OCR과 품질 판정을 백그라운드에서 처리 중입니다...")
+                    time.sleep(2)
+                    st.rerun()
+                elif status["status"] == "success":
+                    st.session_state[ocr_task_key] = None
+                    st.success("자동 OCR과 품질 판정을 완료했습니다.")
+                    st.rerun()
+                else:
+                    st.session_state[ocr_task_key] = None
+                    st.error(f"자동 OCR 실행에 실패했습니다: {status.get('error')}")
+        elif st.button("다음 자동화 단계: 영역별 OCR·품질 판정 실행", type="primary"):
+            try:
+                task_id = client.run_automatic_ocr_async(document.document_id)
+            except (ApiUnavailable, httpx.HTTPError) as exc:
+                st.error(f"자동 OCR 제출에 실패했습니다: {exc}")
+            else:
+                st.session_state[ocr_task_key] = task_id
                 st.rerun()
 
     with st.expander("관리자 진단·모델 개선 도구"):

@@ -77,3 +77,33 @@ def ingest_collected_paper(source_path: str) -> dict[str, Any]:
     )
     report = pipeline.run(source_path)
     return report.model_dump(mode="json")
+
+
+@app.task(name="paperrag.run_automatic_ocr")
+def run_automatic_ocr_task(document_id: str) -> dict[str, Any]:
+    """레이아웃 검수 완료 문서의 영역별 OCR·자동 품질 판정을 백그라운드에서 실행한다.
+
+    review.api의 동기 엔드포인트(`POST /documents/{id}/auto-ocr`)는 200 DPI 논문
+    1페이지에 5분 이상 걸릴 수 있음이 실측됐다(docs/guide/10). 그 요청을 HTTP
+    커넥션 하나로 붙잡고 있으면 리버스 프록시·브라우저 타임아웃에 취약하므로,
+    이 태스크를 큐에 넣고 결과는 GET /jobs/{task_id}로 폴링하는 방식을 쓴다
+    (review.api.submit_automatic_ocr / get_job_status, ui.client의 폴링 참고).
+    """
+    from paperrag.review.service import ReviewService
+
+    result = ReviewService(settings).run_automatic_ocr(document_id)
+    return result.model_dump(mode="json")
+
+
+@app.task(name="paperrag.run_reviewed_ocr")
+def run_reviewed_ocr_task(document_id: str) -> dict[str, Any]:
+    """레이아웃 검수 완료 문서에 대해 사람이 확정한 블록 기준으로 OCR만 실행한다.
+
+    `run_automatic_ocr_task`와 같은 이유(장시간 동기 HTTP 회피)로 비동기 큐를
+    거친다. 관리자가 레이아웃을 직접 교정한 뒤(자동 승인이 아니라) OCR을 실행할
+    때 쓰는 경로다.
+    """
+    from paperrag.review.service import ReviewService
+
+    result = ReviewService(settings).run_reviewed_ocr(document_id)
+    return result.model_dump(mode="json")

@@ -17,7 +17,14 @@ from starlette.concurrency import run_in_threadpool
 
 from paperrag.auth import require_api_key
 from paperrag.config import get_settings
-from paperrag.review.models import BlockCreate, BlockUpdate, IngestedDocument, ReviewDocument
+from paperrag.review.models import (
+    BlockCreate,
+    BlockUpdate,
+    IngestedDocument,
+    JobStatus,
+    ReviewDocument,
+    TaskSubmitted,
+)
 from paperrag.review.service import InvalidPdfError, ReviewService
 from paperrag.review.store import DocumentNotFoundError
 from paperrag.review.viewer import build_viewer_html
@@ -218,6 +225,68 @@ async def run_automatic_ocr(document_id: str, service: ReviewDependency) -> Revi
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"자동 영역별 OCR 실패: {exc}") from exc
+
+
+@router.post("/documents/{document_id}/auto-ocr/async", response_model=TaskSubmitted)
+async def submit_automatic_ocr(document_id: str, service: ReviewDependency) -> TaskSubmitted:
+    """`run_automatic_ocr`와 같은 작업을 백그라운드 큐에 제출하고 즉시 task_id를 반환한다.
+
+    동기 버전은 200 DPI 논문 1페이지 기준 5분 이상 걸릴 수 있음이 실측됐다
+    (docs/guide/10-production-readiness.md) — 그 요청을 HTTP 커넥션 하나로
+    붙잡고 있으면 리버스 프록시·브라우저 타임아웃에 취약하므로, 실제 처리는
+    Celery worker에 맡기고 이 요청은 즉시 끝난다. 진행 상황은
+    `GET /jobs/{task_id}`로 폴링해 확인한다(ui.client의 폴링 로직 참고).
+    문서가 없으면 태스크를 큐에 넣기 전에 먼저 404로 걸러 낭비를 막는다.
+    """
+    try:
+        service.get(document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="document not found") from exc
+
+    from paperrag.worker.app import run_automatic_ocr_task
+
+    task = run_automatic_ocr_task.delay(document_id)
+    return TaskSubmitted(task_id=task.id)
+
+
+@router.post("/documents/{document_id}/run-ocr/async", response_model=TaskSubmitted)
+async def submit_reviewed_ocr(document_id: str, service: ReviewDependency) -> TaskSubmitted:
+    """`run_reviewed_ocr`와 같은 작업을 백그라운드 큐에 제출한다(submit_automatic_ocr와 동일한 이유)."""
+    try:
+        service.get(document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="document not found") from exc
+
+    from paperrag.worker.app import run_reviewed_ocr_task
+
+    task = run_reviewed_ocr_task.delay(document_id)
+    return TaskSubmitted(task_id=task.id)
+
+
+@router.get("/jobs/{task_id}", response_model=JobStatus)
+async def get_job_status(task_id: str) -> JobStatus:
+    """비동기 OCR 작업(auto-ocr/async, run-ocr/async, 향후 다른 무거운 작업)의 진행 상태를 폴링한다.
+
+    Celery의 PENDING/STARTED/SUCCESS/FAILURE 네 상태를 그대로 노출한다(더 세분화된
+    단계별 진행률은 아직 없다 — 필요해지면 task 내부에서 update_state로 커스텀
+    진행률을 보고하도록 확장할 수 있다). 존재하지 않는 task_id는 Celery 기준으로
+    "PENDING"과 구분할 수 없으므로(브로커가 모르는 ID도 PENDING으로 보고) 여기서도
+    동일하게 pending으로 응답한다 — 클라이언트가 잘못된 task_id로 무한 폴링하지
+    않도록 하는 책임은 호출자(ui.client)가 진다.
+    """
+    from celery.result import AsyncResult
+
+    from paperrag.worker.app import app as celery_app
+
+    async_result = AsyncResult(task_id, app=celery_app)
+    state = async_result.state
+    if state == "SUCCESS":
+        return JobStatus(task_id=task_id, status="success", result=async_result.result)
+    if state == "FAILURE":
+        return JobStatus(task_id=task_id, status="failure", error=str(async_result.result))
+    if state == "STARTED":
+        return JobStatus(task_id=task_id, status="started")
+    return JobStatus(task_id=task_id, status="pending")
 
 
 @router.post(

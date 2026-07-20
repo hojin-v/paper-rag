@@ -90,7 +90,7 @@ curl -s http://localhost:8000/ready | python -m json.tool
 | 자동 제목 박스가 `Bengali` 앞부분을 제외 | 작은 박스에서 전체 제목을 얻던 모순은 제거됐으나 자동 결과는 불완전 | 레이아웃 단계에서 좌표 확장 후 OCR, 반복 시 레이아웃 학습 검토 |
 | 읽기 순서 전용 편집 UI 없음 | 신규/기존 박스와 중복은 수정 가능하지만 임의 순서 교정은 숫자 기반 | 검수 빈도 측정 후 순서 편집기 구현 |
 | 200 DPI 실제 2단 논문 첫 페이지 약 5분 30초 | 긴 PDF의 동기 HTTP 시간 초과·낮은 동시성 | 작업 제출·상태 조회·worker polling 연결 |
-| FileReviewStore가 로컬 JSON 기반 | API 다중 replica 동시 수정 안전성 없음 | 단일 API 유지 또는 DB 저장소 전환 |
+| ~~FileReviewStore가 로컬 JSON 기반~~ (해결) | ~~API 다중 replica 동시 수정 안전성 없음~~ | `PostgresReviewStore`로 전환 완료 — 구조화 메타데이터는 트랜잭션 UPDATE(review_documents 테이블)로 저장하고, 바이너리 자산(PDF/PNG)만 로컬 디스크에 유지 |
 | CLI가 항상 STEP 1부터 재실행 | 장애 후 중복 적재 가능 | 체크포인트와 idempotency key 구현 |
 | 논문 provenance가 JSONL manifest에만 있음 | 수집 파일 추적은 가능하지만 DB 결과와 자동 조인되지 않음 | provenance 테이블과 processing run 연결 |
 | 모델·프롬프트 버전이 처리 레코드에 없음 | 결과 재현·교체 감사가 어려움 | processing run manifest 저장 |

@@ -27,6 +27,9 @@ class ApiClient:
     하는 iframe/링크(예: 레이아웃 뷰어) URL을 만들 때 쓴다. 두 URL이 다를 수 있는 이유는
     Streamlit 프로세스가 API에 접근하는 네트워크 경로(예: 컨테이너 내부 주소)와, 사용자의
     브라우저가 접근해야 하는 경로(예: localhost)가 서로 다를 수 있기 때문이다.
+
+    `api_key`가 주어지면(PAPERRAG_API_KEY가 설정된 배포) JSON 요청엔 `X-API-Key`
+    헤더로, 브라우저가 직접 여는 링크엔 `api_key` 쿼리 파라미터로 실어 보낸다.
     """
 
     def __init__(
@@ -35,11 +38,16 @@ class ApiClient:
         http_client: httpx.Client | None = None,
         timeout_seconds: float = 600.0,
         public_base_url: str | None = None,
+        api_key: str | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._public_base_url = (public_base_url or base_url).rstrip("/")
         self._client = http_client or httpx.Client(timeout=timeout_seconds)
         self._owns_client = http_client is None
+        # PAPERRAG_API_KEY가 설정된 배포에서는 이 값을 JSON 요청엔 헤더로,
+        # 브라우저가 직접 여는 링크(viewer_url 등)엔 쿼리 파라미터로 실어 보낸다
+        # (paperrag.auth.require_api_key가 둘 다 인정한다).
+        self._api_key = api_key
 
     def search(
         self,
@@ -198,10 +206,12 @@ class ApiClient:
         기준으로 만들어야 사용자의 브라우저가 실제로 열 수 있는 주소가 된다.
         """
         editable_value = "true" if editable else "false"
-        return (
-            f"{self._public_base_url}/documents/{document_id}/viewer"
-            f"?editable={editable_value}"
-        )
+        url = f"{self._public_base_url}/documents/{document_id}/viewer?editable={editable_value}"
+        if self._api_key:
+            # 브라우저가 이 URL을 <iframe> src로 직접 열므로 헤더를 실을 수 없다 —
+            # require_api_key가 인정하는 쿼리 파라미터 형태로 인증 정보를 붙인다.
+            url += f"&api_key={self._api_key}"
+        return url
 
     def download_training_data(self, *, include_unreviewed: bool = False) -> bytes:
         """모델 개선용 학습 데이터(검수 완료 블록, 옵션에 따라 미검수 블록도 포함)를 내려받는다."""
@@ -229,6 +239,12 @@ class ApiClient:
         바꿔 다시 던진다. 그 외 HTTP 오류(4xx/5xx)는 `raise_for_status()`가 그대로
         `httpx.HTTPError`로 전파하며 이 메서드에서 별도로 감싸지 않는다.
         """
+        if self._api_key:
+            # 호출자가 이미 headers를 넘겼으면(예: upload_document의 content-type)
+            # 덮어쓰지 않고 X-API-Key만 더한다.
+            headers = dict(kwargs.get("headers") or {})
+            headers.setdefault("X-API-Key", self._api_key)
+            kwargs["headers"] = headers
         try:
             response = self._client.request(method, f"{self._base_url}{path}", **kwargs)
             response.raise_for_status()

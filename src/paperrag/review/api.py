@@ -15,13 +15,18 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from starlette.concurrency import run_in_threadpool
 
+from paperrag.auth import require_api_key
 from paperrag.config import get_settings
 from paperrag.review.models import BlockCreate, BlockUpdate, IngestedDocument, ReviewDocument
 from paperrag.review.service import InvalidPdfError, ReviewService
 from paperrag.review.store import DocumentNotFoundError
 from paperrag.review.viewer import build_viewer_html
 
-router = APIRouter(tags=["document-review"])
+# dependencies=[...]를 라우터 전체에 걸어, 검수 관련 엔드포인트 전부(문서 업로드·
+# 조회·뷰어·블록 편집·적재 등)를 하나의 지점에서 일괄 인증 대상으로 삼는다.
+# PAPERRAG_API_KEY가 설정되지 않은 기본 상태에서는 require_api_key가 즉시
+# 통과시키므로 로컬 개발 흐름에는 영향이 없다.
+router = APIRouter(tags=["document-review"], dependencies=[Depends(require_api_key)])
 
 
 @lru_cache

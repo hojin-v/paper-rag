@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 import pytest
 
-from paperrag.config import Settings
+from paperrag.config import Settings, get_settings
 from paperrag.search.api import app, get_service
 from paperrag.search.repository import InMemorySearchRepository
 from paperrag.search.schemas import KeywordCandidate
@@ -87,6 +87,39 @@ def test_health(client_with_service: tuple[TestClient, SearchService]) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_search_requires_api_key_when_configured(
+    client_with_service: tuple[TestClient, SearchService],
+) -> None:
+    """PAPERRAG_API_KEY가 설정되면 /search가 401을 내고, 올바른 헤더면 통과해야 한다.
+
+    require_api_key가 Depends(get_settings)로 settings를 주입받으므로
+    app.dependency_overrides[get_settings]로 API 키가 설정된 상황을 재현할 수 있다
+    (실제 라우터에 인증이 제대로 연결됐는지 앱 전체 경로로 확인 — 단위 테스트는
+    tests/test_auth.py 참고). /health는 인증 대상이 아니므로 그대로 통과해야 한다.
+    """
+    client, _ = client_with_service
+
+    async def override_settings() -> Settings:
+        return Settings(_env_file=None, api_key="secret")
+
+    app.dependency_overrides[get_settings] = override_settings
+    try:
+        unauthenticated = client.post("/search", json={"query": "RAG 관련 논문"})
+        assert unauthenticated.status_code == 401
+
+        authenticated = client.post(
+            "/search",
+            json={"query": "RAG 관련 논문"},
+            headers={"X-API-Key": "secret"},
+        )
+        assert authenticated.status_code == 200
+
+        still_open = client.get("/health")
+        assert still_open.status_code == 200
+    finally:
+        del app.dependency_overrides[get_settings]
 
 
 def test_search_matched_and_excel_download(

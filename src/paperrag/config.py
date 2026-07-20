@@ -222,6 +222,16 @@ class Settings(BaseSettings):
     public_api_base_url: str = "http://localhost:8000"
     api_timeout_seconds: int = 1800
     log_level: str = "INFO"
+    # 검수/검색 API 공유 비밀키. None(기본값)이면 인증을 검사하지 않는다(로컬 개발용).
+    # 값을 설정하면 X-API-Key 헤더 또는 api_key 쿼리 파라미터가 이 값과 일치해야
+    # 요청이 통과한다(paperrag.auth.require_api_key 참고). 인증서·리버스 프록시 없이도
+    # 최소한의 접근 통제를 걸기 위한 것으로, TLS 자체를 대체하지는 않는다.
+    api_key: str | None = None
+    # 동시에 실행할 수 있는 "무거운" 작업(Paddle OCR·LLM 호출) 개수 상한. 저사양 CPU
+    # 환경에서 여러 요청이 한꺼번에 몰려 swap이 가득 차는 문제(2026-07-12 실측)를 막기
+    # 위한 전역 세마포어 크기다. 1이면 완전 직렬(가장 안전), 늘리면 처리량은 늘지만
+    # 메모리 여유가 그만큼 있어야 한다.
+    heavy_task_max_concurrency: int = 1
 
 
 @lru_cache

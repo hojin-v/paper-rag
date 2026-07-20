@@ -11,6 +11,10 @@ GET  /result/{result_id}/excel                    -> xlsx 다운로드
 SearchService의 예외(SearchSessionNotFound/SearchNoPaperFound/SearchDependencyError)를
 HTTP 상태 코드로 변환하는 것 외의 비즈니스 로직은 두지 않는다. 실제 매칭·점수 계산은
 search.service.SearchService에, DB 접근은 search.repository에 있다.
+
+`/health`·`/ready`는 로드밸런서·모니터링이 인증 없이 두드릴 수 있어야 하므로
+인증 대상에서 제외했고, 나머지 엔드포인트(및 review_router 전체)는
+`paperrag.auth.require_api_key`로 보호한다(PAPERRAG_API_KEY 미설정 시 통과).
 """
 
 import os
@@ -20,6 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 from starlette.types import Receive, Scope, Send
 
+from paperrag.auth import require_api_key
 from paperrag.config import get_settings
 from paperrag.review.api import router as review_router
 from paperrag.readiness import build_readiness_report
@@ -105,7 +110,11 @@ async def ready() -> JSONResponse:
     return JSONResponse(report, status_code=status_code)
 
 
-@app.post("/search", response_model=SearchMatched | SearchSuggest)
+@app.post(
+    "/search",
+    response_model=SearchMatched | SearchSuggest,
+    dependencies=[Depends(require_api_key)],
+)
 async def search(
     request: SearchRequest,
     service: SearchService = Depends(get_service),
@@ -136,7 +145,11 @@ async def search(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@app.post("/search/select", response_model=SearchMatched)
+@app.post(
+    "/search/select",
+    response_model=SearchMatched,
+    dependencies=[Depends(require_api_key)],
+)
 async def select(
     request: SelectRequest,
     service: SearchService = Depends(get_service),
@@ -160,7 +173,7 @@ async def select(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@app.get("/result/{result_id}/excel")
+@app.get("/result/{result_id}/excel", dependencies=[Depends(require_api_key)])
 async def result_excel(
     result_id: str,
     service: SearchService = Depends(get_service),

@@ -236,6 +236,7 @@ def main() -> None:
         settings.api_base_url,
         timeout_seconds=settings.api_timeout_seconds,
         public_base_url=settings.public_api_base_url,
+        api_key=settings.api_key,
     )
 
     st.title("Paper RAG")

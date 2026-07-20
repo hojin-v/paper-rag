@@ -1,3 +1,20 @@
+"""적재 완료된 검수 문서를 사람이 평가하기 좋은 엑셀(.xlsx)로 내보내는 스크립트.
+
+이미 `/documents/{id}/ingest`까지 마쳐 DB(papers/paragraphs/keywords/paper_tables)와 로컬 검수
+저장소(FileReviewStore)에 모두 결과가 남은 문서들을 대상으로, 다음 5개 시트로 구성된 엑셀 1개와
+같은 이름의 요약 Markdown 리포트를 만든다.
+
+- `논문요약`: 논문 1건당 1행 — 메타데이터, 블록/단락/표 개수, 대표 키워드, 자동 점검 메모.
+- `레이아웃_OCR`: 블록 1건당 1행 — 자동 인식 유형/좌표/OCR 원문과 사람이 교정한 현재 값을 나란히 비교.
+- `단락_요약`: 단락 1건당 1행 — 원문·정제문·LLM 요약과 요약 자동 경고(중국어 혼입 등).
+- `대표키워드`: 논문-키워드 연결 1건당 1행 — 정규화 키워드, 표시 키워드, 빈도, 논문 점수.
+- `표_추출`: 표 1건당 1행 — 표 제목, OCR 원문, LLM 요약.
+
+사람이 교정한 레이아웃 블록(`레이아웃_OCR`)과 자동 요약 경고가 있는 단락(`단락_요약`)은 각각
+연노랑(CORRECTED_FILL)·연분홍(WARNING_FILL) 배경으로 강조해, 자동 결과와 사람 개입 결과를 한눈에
+구분할 수 있게 한다.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -20,16 +37,18 @@ from paperrag.db import get_engine
 from paperrag.review.models import ReviewDocument
 from paperrag.review.store import FileReviewStore
 
-EXCEL_CELL_LIMIT = 32_767
-HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
-CORRECTED_FILL = PatternFill("solid", fgColor="FFF2CC")
-WARNING_FILL = PatternFill("solid", fgColor="F4CCCC")
-HAN_RE = re.compile(r"[\u4e00-\u9fff]")
-BENGALI_RE = re.compile(r"[\u0980-\u09ff]")
+EXCEL_CELL_LIMIT = 32_767  # 엑셀 셀 문자열 길이 제한(약 32,767자). 초과 시 잘라서 저장한다.
+HEADER_FILL = PatternFill("solid", fgColor="1F4E78")  # 헤더 행 배경(진한 남색).
+CORRECTED_FILL = PatternFill("solid", fgColor="FFF2CC")  # 사람이 교정한 레이아웃 블록 표시(연노랑).
+WARNING_FILL = PatternFill("solid", fgColor="F4CCCC")  # 자동 경고가 붙은 단락 요약 표시(연분홍).
+HAN_RE = re.compile(r"[\u4e00-\u9fff]")  # 한자(CJK 통합 한자) 범위 — LLM 요약에 중국어가 섞였는지 검사.
+BENGALI_RE = re.compile(r"[\u0980-\u09ff]")  # 벵골 문자 범위 — 다국어 모델이 엉뚱한 언어를 낼 때 검출.
 FORMAT_POLLUTION_RE = re.compile(r"```|抱歉|JSON回答|已结束|以下是结果", re.IGNORECASE)
+# 위 패턴은 LLM이 마크다운 코드블록 표기나 중국어 정형 문구를 응답에 섞어 내는 형식 오염을 잡는다.
 
 
 def parse_args() -> argparse.Namespace:
+    """`--document-id`(여러 번 지정 가능)와 선택적 `--output` 경로를 CLI 인자로 받는다."""
     parser = argparse.ArgumentParser(
         description="검수 문서의 레이아웃·OCR·LLM 결과를 평가용 엑셀로 내보냅니다."
     )
@@ -45,6 +64,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    """검수 문서 ID들을 받아 로컬 검수 결과 + DB 행을 모아 엑셀·Markdown 리포트로 저장한다.
+
+    출력 파일 기본 경로는 `settings.result_dir/evaluations/ocr-evaluation.xlsx`이며,
+    같은 이름의 `.md` 리포트를 나란히 생성한다(요약 통계와 한계 서술 포함).
+    """
     args = parse_args()
     settings = get_settings()
     output = args.output or settings.result_dir / "evaluations" / "ocr-evaluation.xlsx"
@@ -65,6 +89,11 @@ def main() -> int:
 def _load_ingested_documents(
     settings: Settings, document_ids: Sequence[str]
 ) -> list[ReviewDocument]:
+    """FileReviewStore에서 검수 문서를 불러오고, 아직 DB에 적재되지 않은(paper_id 없는) 문서는 거부한다.
+
+    이 스크립트는 이미 적재된 결과를 DB와 조인해 보여주는 것이 목적이므로, 적재 전 문서가
+    섞여 있으면 조기에 명확한 오류로 알린다.
+    """
     store = FileReviewStore(settings.review_dir)
     documents = [store.get(document_id) for document_id in document_ids]
     incomplete = [document.document_id for document in documents if document.paper_id is None]
@@ -74,6 +103,7 @@ def _load_ingested_documents(
 
 
 def _load_database_rows(engine: Engine, paper_ids: Sequence[int]) -> dict[str, list[RowMapping]]:
+    """대상 논문 ID들의 papers/paragraphs/keywords/paper_tables 행을 한 번씩 조회해 묶어 돌려준다."""
     if not paper_ids:
         return {"papers": [], "paragraphs": [], "keywords": [], "tables": []}
     statements = {
@@ -103,6 +133,8 @@ def _load_database_rows(engine: Engine, paper_ids: Sequence[int]) -> dict[str, l
     rows: dict[str, list[RowMapping]] = {}
     with engine.connect() as connection:
         for name, sql in statements.items():
+            # bindparam(expanding=True): paper_ids 리스트 길이에 맞춰 `IN (:p1, :p2, ...)`로
+            # 자동 전개되는 SQLAlchemy 파라미터 바인딩. SQL 인젝션 없이 가변 개수 IN 절을 만든다.
             statement = text(sql).bindparams(bindparam("paper_ids", expanding=True))
             rows[name] = list(
                 connection.execute(statement, {"paper_ids": list(paper_ids)}).mappings()
@@ -115,6 +147,11 @@ def _build_workbook(
     documents: Sequence[ReviewDocument],
     data: dict[str, list[RowMapping]],
 ) -> Workbook:
+    """5개 시트(논문요약·레이아웃_OCR·단락_요약·대표키워드·표_추출)로 구성된 평가용 워크북을 만든다.
+
+    각 시트는 DB에서 읽은 최종 결과(data)와 로컬 검수 저장소의 원시 검수 이력(documents)을
+    논문 ID로 짝지어, "자동 인식 결과"와 "사람이 검수·교정한 결과"를 나란히 비교할 수 있게 한다.
+    """
     workbook = Workbook()
     overview = workbook.active
     overview.title = "논문요약"
@@ -129,6 +166,7 @@ def _build_workbook(
         "대표 키워드", "본문 단락", "관련 단락", "요약 경고 단락", "표", "브라우저 검수 URL", "자동 점검 메모",
     ]
     overview.append(overview_headers)
+    # "논문요약" 시트: 논문 1건당 1행으로, 문서 전체의 자동 처리 품질을 한눈에 훑어보기 위한 요약.
     for document in documents:
         paper_id = int(document.paper_id or 0)
         paper = paper_by_id[paper_id]
@@ -167,6 +205,8 @@ def _build_workbook(
         )
     _style_sheet(overview, freeze="A2", wrap=True, widths={3: 34, 4: 48, 11: 55, 12: 55, 18: 70, 19: 58})
 
+    # "레이아웃_OCR" 시트: 레이아웃 블록 1건당 1행으로, 자동 인식 결과(자동 인식 유형·자동 bbox·원시 OCR)와
+    # 사람이 검수 화면에서 확정한 현재 값(현재 유형·현재 bbox·교정 OCR)을 나란히 배치해 비교한다.
     layout = workbook.create_sheet("레이아웃_OCR")
     layout.append(
         [
@@ -196,10 +236,13 @@ def _build_workbook(
                 ]
             )
             if block.review_status == "corrected":
+                # 사람이 실제로 값을 바꾼 블록만 연노랑으로 강조해, 자동 인식이 그대로 채택된
+                # 다수 행과 구분한다.
                 for cell in layout[layout.max_row]:
                     cell.fill = CORRECTED_FILL
     _style_sheet(layout, freeze="A2", wrap=True, widths={2: 38, 13: 70, 14: 70, 15: 70})
 
+    # "단락_요약" 시트: 단락 1건당 1행으로, 정제 본문과 LLM 요약을 비교하고 자동 휴리스틱 경고를 붙인다.
     paragraphs_sheet = workbook.create_sheet("단락_요약")
     paragraphs_sheet.append(
         [
@@ -219,10 +262,13 @@ def _build_workbook(
             ]
         )
         if warning:
+            # LLM 요약에 중국어·벵골어 혼입이나 형식 오염이 휴리스틱으로 감지된 행만 연분홍으로
+            # 강조한다. 내용의 정확성 자체는 이 표시로 보장되지 않으며 사람이 별도로 읽어야 한다.
             for cell in paragraphs_sheet[paragraphs_sheet.max_row]:
                 cell.fill = WARNING_FILL
     _style_sheet(paragraphs_sheet, freeze="A2", wrap=True, widths={2: 42, 4: 28, 6: 80, 7: 80, 8: 60, 9: 36, 11: 36})
 
+    # "대표키워드" 시트: 논문-키워드 연결 1건당 1행(paper_keywords JOIN keywords 결과 그대로).
     keywords_sheet = workbook.create_sheet("대표키워드")
     keywords_sheet.append(["논문 ID", "제목", "정규화 키워드", "표시 키워드", "누적 빈도", "논문 점수"])
     for row in data["keywords"]:
@@ -234,6 +280,8 @@ def _build_workbook(
         )
     _style_sheet(keywords_sheet, freeze="A2", wrap=True, widths={2: 48, 3: 30, 4: 30})
 
+    # "표_추출" 시트: paper_tables 1행당 1행. 표 영역은 PP-LCNet 분류 후 SLANeXt_wired/SLANet_plus로
+    # 구조화된 OCR 결과이므로, 표 OCR 원문과 LLM 요약을 그대로 노출해 표 구조 인식 품질을 확인한다.
     tables_sheet = workbook.create_sheet("표_추출")
     tables_sheet.append(["논문 ID", "제목", "표 ID", "표 제목", "표 OCR", "표 요약"])
     for row in data["tables"]:
@@ -253,6 +301,11 @@ def _build_markdown(
     data: dict[str, list[RowMapping]],
     output: Path,
 ) -> str:
+    """엑셀과 같은 데이터로 사람이 빠르게 훑어볼 수 있는 요약 Markdown 리포트를 만든다.
+
+    표(개요), LLM 요약 자동 경고 비율, 문서별 관찰된 한계를 순서대로 정리하고, 상세 원문은
+    엑셀의 레이아웃_OCR·단락_요약 시트를 보라고 안내한다.
+    """
     papers = {int(row["paper_id"]): row for row in data["papers"]}
     paragraphs = _group_by_paper(data["paragraphs"])
     keywords = _group_by_paper(data["keywords"])
@@ -313,6 +366,12 @@ def _build_markdown(
 
 
 def _quality_note(document: ReviewDocument, paper: RowMapping) -> str:
+    """자동 처리 결과에서 흔히 놓치는 항목(제목·초록 누락, 사람 교정 여부)을 짧은 메모로 요약한다.
+
+    docs/guide/10-production-readiness.md가 지적하는 "자동 제목 박스 누락" 같은 잔여 위험을
+    문서별로 빠르게 스크리닝하기 위한 휴리스틱이며, OCR 철자 오류나 도형 내부 텍스트처럼 이
+    메모가 잡지 못하는 문제는 사람이 원문을 직접 봐야 한다.
+    """
     notes: list[str] = []
     detected_types = [block.detected_block_type or block.block_type for block in document.blocks]
     if "title" not in detected_types:
@@ -328,6 +387,12 @@ def _quality_note(document: ReviewDocument, paper: RowMapping) -> str:
 
 
 def _summary_warning(summary: str) -> str:
+    """LLM 요약 문자열을 휴리스틱으로 검사해 중국어·벵골어 혼입, 응답 형식 오염 여부를 문자열로 반환한다.
+
+    Qwen2.5 등 다국어 LLM이 한국어 요약 대신 엉뚱한 언어나 마크다운 코드블록·중국어 정형 문구를
+    섞어 낼 때가 있어, 이를 자동으로 잡아 사람이 우선 확인할 행을 좁히기 위한 용도다. 빈 문자열을
+    반환하면 경고 없음을 의미한다.
+    """
     warnings: list[str] = []
     if HAN_RE.search(summary):
         warnings.append("중국어/한자 혼입")
@@ -339,6 +404,7 @@ def _summary_warning(summary: str) -> str:
 
 
 def _group_by_paper(rows: Iterable[RowMapping]) -> dict[int, list[RowMapping]]:
+    """DB 조회 결과(RowMapping 목록)를 paper_id를 키로 하는 딕셔너리로 묶는다."""
     grouped: dict[int, list[RowMapping]] = {}
     for row in rows:
         grouped.setdefault(int(row["paper_id"]), []).append(row)
@@ -346,10 +412,16 @@ def _group_by_paper(rows: Iterable[RowMapping]) -> dict[int, list[RowMapping]]:
 
 
 def _bbox_text(bbox: tuple[float, float, float, float] | None) -> str:
+    """(x1, y1, x2, y2) 좌표 튜플을 엑셀 셀에 넣기 좋은 콤마 구분 문자열로 바꾼다."""
     return "" if bbox is None else ", ".join(f"{value:.2f}" for value in bbox)
 
 
 def _excel_text(value: Any) -> str:
+    """엑셀 셀 문자열 길이 제한(EXCEL_CELL_LIMIT)을 넘는 값은 잘라내고 잘림 표시를 남긴다.
+
+    긴 원문·OCR 텍스트·요약을 그대로 셀에 넣으면 openpyxl이 저장 시 오류를 낼 수 있으므로,
+    제한 이하일 때는 그대로, 넘을 때만 안전하게 잘라서 반환한다.
+    """
     if value is None:
         return ""
     rendered = str(value)
@@ -366,6 +438,11 @@ def _style_sheet(
     wrap: bool,
     widths: dict[int, float],
 ) -> None:
+    """모든 시트에 공통 서식(헤더 강조, 틀 고정, 자동 필터, 줄바꿈, 열 너비)을 적용한다.
+
+    5개 시트가 각기 다른 열 구성을 갖지만 "1행 헤더 고정 + 열별 필터 + 긴 텍스트 줄바꿈"이라는
+    가독성 규칙은 공유하므로, 시트별 반복 코드를 줄이기 위해 한 곳에 모았다.
+    """
     sheet.freeze_panes = freeze
     sheet.auto_filter.ref = sheet.dimensions
     for cell in sheet[1]:

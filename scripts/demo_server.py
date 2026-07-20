@@ -1,5 +1,11 @@
 """데모 검색 API 서버 — DB·LLM·임베딩 모델 없이 기동한다 (UI 확인·시연용).
 
+이 스크립트는 실제 PostgreSQL, Ollama, BGE-M3 임베딩 서버를 전혀 띄우지 않고, 인메모리로 만든
+소량의 시드 데이터(`build_repository`)와 결정적(가짜) LLM·임베딩 구현만으로 검색 API를 흉내낸다.
+따라서 `docs/guide/10-production-readiness.md`가 말하는 "운영 폴백 차단" 대상이며, 이 서버가 응답한다고
+해서 실제 OCR·검색·임베딩 파이프라인이 동작함을 검증한 것이 아니다 — 오직 검색 API의 요청/응답
+스키마와 UI 화면 흐름을 빠르게 눈으로 확인하기 위한 용도이다.
+
 실행:
     .venv/bin/python scripts/demo_server.py [--port 8000]
 
@@ -23,14 +29,23 @@ from paperrag.search.service import SearchService
 
 
 class DemoLLM:
-    """항상 실패해 서비스의 폴백 키워드 추출 경로를 태운다."""
+    """항상 실패해 서비스의 폴백 키워드 추출 경로를 태운다.
+
+    실제 Ollama 없이도 "LLM 실패 시 규칙 기반 키워드 추출로 대체"하는 SearchService의 경로를
+    시연하기 위해, 의도적으로 매 호출마다 예외를 던진다.
+    """
 
     def generate_json(self, prompt: str, schema_hint: str) -> dict[str, Any]:
         raise RuntimeError("데모 모드: LLM 미사용")
 
 
 class DemoEmbedding:
-    """부분 문자열 매칭 기반 결정적 2차원 벡터 (시연용)."""
+    """부분 문자열 매칭 기반 결정적 2차원 벡터 (시연용).
+
+    실제 BGE-M3는 1024차원 실수 벡터를 생성하지만, 데모에서는 실행 환경에 임베딩 서버가 없어도
+    검색 흐름을 재현할 수 있도록 미리 정한 키워드가 텍스트에 포함되면 항상 같은 2차원 벡터를
+    돌려주는 규칙 기반 스텁으로 대체한다. 실제 의미 유사도 계산이 아니다.
+    """
 
     RULES = [
         ("이상탐지", [1.0, 0.0]),
@@ -44,12 +59,19 @@ class DemoEmbedding:
         vectors: list[list[float]] = []
         for text in texts:
             lowered = text.lower()
+            # RULES에 등록된 키워드 중 텍스트에 포함된 첫 번째 것을 사용하고, 없으면 두 클러스터
+            # 어디에도 속하지 않는 낮은 값 벡터([0.05, 0.05])로 처리한다.
             match = next((vec for key, vec in self.RULES if key in lowered), [0.05, 0.05])
             vectors.append(match)
         return vectors
 
 
 def build_repository() -> InMemorySearchRepository:
+    """PostgreSQL 대신 사용할 인메모리 시드 데이터(키워드·논문·단락·표·연관관계)를 만든다.
+
+    실제 DB 스키마(docs/guide/03-database.md의 papers/paragraphs/keywords/... 테이블)와 같은 형태의
+    딕셔너리를 손으로 채워 넣어, 검색 서비스가 실제 저장소와 동일한 인터페이스로 동작하도록 한다.
+    """
     return InMemorySearchRepository(
         keywords=[
             {"keyword_id": 1, "keyword": "이상탐지", "display_form": "이상탐지",
@@ -120,6 +142,11 @@ def build_repository() -> InMemorySearchRepository:
 
 
 def build_service() -> SearchService:
+    """`.env`를 무시한 최소 데모 설정으로 SearchService를 조립한다(가짜 LLM·임베딩·인메모리 저장소).
+
+    `_env_file=None`으로 실제 `.env`를 읽지 않게 해, 개발자 PC의 운영 설정과 무관하게 항상 같은
+    데모 동작을 재현한다.
+    """
     settings = Settings(
         _env_file=None,
         result_dir=Path("outputs"),
@@ -131,6 +158,11 @@ def build_service() -> SearchService:
 
 
 def main() -> None:
+    """CLI 인자로 host/port를 받아, 실제 검색 API 앱에 데모 서비스만 주입해 실행한다.
+
+    FastAPI의 `dependency_overrides`를 사용해 운영용 `get_service` 의존성만 데모 SearchService로
+    바꿔치기하므로, 라우팅·요청/응답 스키마는 운영 API(`paperrag.search.api`)와 동일하다.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)

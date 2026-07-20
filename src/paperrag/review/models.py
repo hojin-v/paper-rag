@@ -16,6 +16,7 @@ class AutomationQuality(BaseModel):
     recognized_blocks: int
     ocr_coverage: float
     title_detected: bool
+    author_detected: bool = True
     title_consistent: bool = True
     tables_detected: int
     tables_structured: int
@@ -26,9 +27,15 @@ class AutomationQuality(BaseModel):
 class LayoutQuality(BaseModel):
     detected_text_lines: int = 0
     initially_covered_text_lines: int = 0
+    finally_covered_text_lines: int = 0
     initial_text_coverage: float = 0.0
+    final_text_coverage: float = 0.0
+    uncovered_text_lines: int = 0
     expanded_blocks: int = 0
     added_text_blocks: int = 0
+    split_section_headings: int = 0
+    recovered_title_blocks: int = 0
+    recovered_author_blocks: int = 0
 
 
 class ReviewPage(BaseModel):

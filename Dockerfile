@@ -11,7 +11,7 @@ RUN apt-get update \
 
 COPY pyproject.toml README.md ./
 COPY src ./src
-ARG PAPERRAG_EXTRAS="ingest-full,ui,worker"
+ARG PAPERRAG_EXTRAS="ocr,ui,worker"
 RUN pip install --no-cache-dir ".[${PAPERRAG_EXTRAS}]"
 
 COPY db ./db

@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 300
     llm_temperature: float = 0.0
     llm_max_output_tokens: int = 192
+    llm_forbid_cjk_ideographs: bool = True
     llm_cache_enabled: bool = True
     llm_cache_dir: Path = Path("./data/llm-cache")
     embed_base_url: str = "http://localhost:8100"
@@ -46,6 +47,7 @@ class Settings(BaseSettings):
     paddle_isolate_process: bool = True
     paddle_worker_timeout_seconds: int = 1800
     automatic_ocr_min_coverage: float = 0.9
+    automatic_ocr_require_author: bool = True
     paddle_layout_model_name: str = "PP-DocLayout-M"
     paddle_layout_threshold: float = 0.3
     paddle_layout_text_reconcile: bool = True
@@ -53,6 +55,16 @@ class Settings(BaseSettings):
     paddle_text_merge_gap_ratio: float = 1.8
     paddle_abstract_merge_gap_ratio: float = 0.5
     paddle_abstract_merge_x_overlap: float = 0.7
+    paddle_section_heading_split: bool = True
+    paddle_section_heading_min_body_lines: int = 2
+    paddle_section_heading_max_width_ratio: float = 0.72
+    paddle_section_heading_line_overlap: float = 0.6
+    paddle_inline_abstract_split: bool = True
+    paddle_inline_heading_ocr_min_confidence: float = 0.7
+    paddle_inline_heading_max_prefix_ratio: float = 0.4
+    paddle_title_region_recovery: bool = True
+    paddle_title_min_width_ratio: float = 0.55
+    paddle_author_region_recovery: bool = True
     footnote_filter_enabled: bool = True
     footnote_bottom_ratio: float = 0.88
     footnote_max_height_ratio: float = 0.02

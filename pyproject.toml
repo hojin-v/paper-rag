@@ -28,6 +28,12 @@ dev = [
 ingest = [
     "pymupdf",
 ]
+ocr = [
+    "pymupdf",
+    "paddlepaddle==3.3.0",
+    "paddleocr[doc-parser]==3.7.0",
+    "kiwipiepy",
+]
 ingest-full = [
     "pymupdf",
     "docling",

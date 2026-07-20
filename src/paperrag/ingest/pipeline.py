@@ -36,6 +36,20 @@ STAGE_5 = "step5_llm_enrich"
 STAGE_6 = "step6_keywords"
 STAGE_7 = "step7_embed"
 STAGE_8 = "step8_relate"
+ABSTRACT_HEADING_RE = re.compile(
+    r"^\s*(?:abstract|초록|요약)\s*(?:[:：.\-–—]\s*)?(?:\r?\n|\s+)",
+    re.IGNORECASE,
+)
+AFFILIATION_RE = re.compile(
+    r"(?:@|\b(?:university|institute|laborator(?:y|ies)|research|department|"
+    r"school|college|centre|center|corporation|company|\bco\.|\bltd\.?|\binc\.?)\b)",
+    re.IGNORECASE,
+)
+AUTHOR_MARKER_RE = re.compile(
+    r"\s*[*∗†‡]\s*\d*(?:\s*,\s*\d+)*"
+    r"|\d+\s*[*∗†‡](?=\s*(?:,|$))"
+    r"|(?<=[A-Za-z])\d+(?=\s*(?:,|$))"
+)
 
 
 class IngestPipeline:
@@ -349,16 +363,89 @@ def _extract_meta(
     source_path: str,
 ) -> PaperMeta:
     title = _join_block_text(meta_blocks.get("title", [])) or Path(source_path).stem
-    authors_text = _join_block_text(meta_blocks.get("author", []))
-    abstract = _join_block_text(meta_blocks.get("abstract", []))
+    authors = _extract_authors(meta_blocks.get("author", []))
+    abstract = _strip_abstract_heading(
+        _join_block_text(meta_blocks.get("abstract", []))
+    )
     context = "\n".join(block.text for block in sorted(all_blocks, key=lambda item: item.order)[:20])
     return PaperMeta(
         title=title.strip(),
-        authors=_split_authors(authors_text),
+        authors=authors,
         published_year=_extract_year(" ".join([title, abstract, context])),
         journal=None,
         abstract=abstract.strip(),
     )
+
+
+def _strip_abstract_heading(text: str) -> str:
+    return ABSTRACT_HEADING_RE.sub("", text, count=1).strip()
+
+
+def _extract_authors(blocks: Sequence[LayoutBlock]) -> list[str]:
+    author_texts: list[str] = []
+    for block in _order_author_blocks(blocks):
+        name_lines: list[str] = []
+        affiliation_started = False
+        for line in block.text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if AFFILIATION_RE.search(stripped):
+                affiliation_started = True
+                break
+            name_lines.append(stripped)
+        if name_lines:
+            author_texts.append(" ".join(name_lines))
+        if affiliation_started:
+            break
+    cleaned = AUTHOR_MARKER_RE.sub("", ", ".join(author_texts))
+    return _split_authors(cleaned)
+
+
+def _order_author_blocks(blocks: Sequence[LayoutBlock]) -> list[LayoutBlock]:
+    positioned = [block for block in blocks if block.bbox is not None]
+    unpositioned = [block for block in blocks if block.bbox is None]
+    if not positioned:
+        return sorted(unpositioned, key=lambda item: item.order)
+    rows: list[tuple[float, list[LayoutBlock]]] = []
+    for block in sorted(
+        positioned,
+        key=lambda item: (
+            (item.bbox[1] + item.bbox[3]) / 2.0,
+            item.bbox[0],
+        )
+        if item.bbox is not None
+        else (float("inf"), float("inf")),
+    ):
+        if block.bbox is None:
+            continue
+        center = (block.bbox[1] + block.bbox[3]) / 2.0
+        height = max(1.0, block.bbox[3] - block.bbox[1])
+        row_index = next(
+            (
+                index
+                for index, (row_center, _) in enumerate(rows)
+                if abs(center - row_center) <= height * 0.5
+            ),
+            None,
+        )
+        if row_index is None:
+            rows.append((center, [block]))
+            continue
+        row_center, row_blocks = rows[row_index]
+        rows[row_index] = (
+            (row_center * len(row_blocks) + center) / (len(row_blocks) + 1),
+            [*row_blocks, block],
+        )
+    visual_order = [
+        block
+        for _, row_blocks in sorted(rows, key=lambda row: row[0])
+        for block in sorted(
+            row_blocks,
+            key=lambda item: item.bbox[0] if item.bbox is not None else float("inf"),
+        )
+    ]
+    return [*visual_order, *sorted(unpositioned, key=lambda item: item.order)]
 
 
 def _join_block_text(blocks: Sequence[LayoutBlock]) -> str:

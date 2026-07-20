@@ -51,12 +51,25 @@ def build_relations(
             continue
         candidate_keywords = set(_get(candidate, "keywords") or [])
         overlap = sorted(new_keywords & candidate_keywords)
-        score = relation_score(
-            cosine(new_embedding, _get(candidate, "embedding") or []),
-            jaccard(new_keywords, candidate_keywords),
-            year_proximity(new_year, _get(candidate, "published_year")),
+        embedding_cosine = cosine(
+            new_embedding,
+            _get(candidate, "embedding") or [],
         )
-        reason = "겹치는 키워드: " + ", ".join(overlap) if overlap else "겹치는 키워드 없음"
+        keyword_jaccard = jaccard(new_keywords, candidate_keywords)
+        year_score = year_proximity(new_year, _get(candidate, "published_year"))
+        score = relation_score(embedding_cosine, keyword_jaccard, year_score)
+        overlap_reason = (
+            "겹치는 키워드: " + ", ".join(overlap)
+            if overlap
+            else "겹치는 키워드 없음"
+        )
+        reason = (
+            f"관계 점수={score:.3f} "
+            f"(논문 임베딩 cosine {embedding_cosine:.3f}*0.6="
+            f"{0.6 * embedding_cosine:.3f}, 키워드 Jaccard {keyword_jaccard:.3f}*0.3="
+            f"{0.3 * keyword_jaccard:.3f}, 연도 근접도 {year_score:.3f}*0.1="
+            f"{0.1 * year_score:.3f}); {overlap_reason}"
+        )
         scored.append((candidate_id, score, reason))
 
     return sorted(scored, key=lambda item: item[1], reverse=True)[:top_n]

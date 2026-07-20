@@ -1,4 +1,5 @@
 import os
+import re
 from collections.abc import Iterable, Mapping
 from html.parser import HTMLParser
 from pathlib import Path
@@ -38,6 +39,7 @@ LABEL_MAP: dict[str, BlockType] = {
     "number": "header_footer",
     "figure_table_chart_title": "table_caption",
 }
+ABSTRACT_HEADER_RE = re.compile(r"^\s*(abstract|초록|요약)\b", re.IGNORECASE)
 
 
 class PaddleBackend:
@@ -135,6 +137,7 @@ class PaddleBackend:
             device=self.settings.paddle_device,
         )
         text_detector: Any | None = None
+        heading_recognizer: Any | None = None
         if self.settings.paddle_layout_text_reconcile:
             detector_dir = self.settings.paddle_text_detection_model_dir
             if detector_dir is None:
@@ -154,8 +157,12 @@ class PaddleBackend:
         metric_totals: dict[str, int] = {
             "detected_text_lines": 0,
             "initially_covered_text_lines": 0,
+            "finally_covered_text_lines": 0,
             "expanded_blocks": 0,
             "added_text_blocks": 0,
+            "split_section_headings": 0,
+            "recovered_title_blocks": 0,
+            "recovered_author_blocks": 0,
         }
         with TemporaryDirectory(prefix="paperrag-layout-") as temporary_dir:
             pages = _render_pdf_pages(
@@ -196,6 +203,92 @@ class PaddleBackend:
                             self.settings.paddle_abstract_merge_x_overlap
                         ),
                     )
+                    page_blocks, split_count = _split_merged_section_regions(
+                        page_blocks,
+                        text_lines,
+                        page=page_number,
+                        start_order=len(blocks),
+                        enabled=self.settings.paddle_section_heading_split,
+                        min_body_lines=(
+                            self.settings.paddle_section_heading_min_body_lines
+                        ),
+                        max_heading_width_ratio=(
+                            self.settings.paddle_section_heading_max_width_ratio
+                        ),
+                        line_overlap=self.settings.paddle_section_heading_line_overlap,
+                    )
+                    inline_candidates = _inline_abstract_candidate_bboxes(
+                        page_blocks,
+                        text_lines,
+                        min_body_lines=(
+                            self.settings.paddle_section_heading_min_body_lines
+                        ),
+                        line_overlap=self.settings.paddle_section_heading_line_overlap,
+                        include_text_blocks=page_number == 1,
+                    )
+                    if (
+                        self.settings.paddle_inline_abstract_split
+                        and inline_candidates
+                    ):
+                        if heading_recognizer is None:
+                            recognizer_dir = self.settings.paddle_ocr_model_dir
+                            if recognizer_dir is None:
+                                raise FileNotFoundError(
+                                    "PAPERRAG_PADDLE_OCR_MODEL_DIR가 필요합니다."
+                                )
+                            _require_model_directory(
+                                recognizer_dir,
+                                "PAPERRAG_PADDLE_OCR_MODEL_DIR",
+                            )
+                            heading_recognizer = create_model(
+                                self.settings.paddle_text_recognition_model_name,
+                                model_dir=str(recognizer_dir),
+                                device=self.settings.paddle_device,
+                            )
+                        recognized_headings = _recognize_heading_candidates(
+                            heading_recognizer,
+                            image_path,
+                            inline_candidates,
+                            output_dir=Path(temporary_dir),
+                            page=page_number,
+                            min_confidence=(
+                                self.settings.paddle_inline_heading_ocr_min_confidence
+                            ),
+                        )
+                        page_blocks, inline_split_count = (
+                            _split_inline_abstract_headings(
+                                page_blocks,
+                                text_lines,
+                                recognized_headings,
+                                page=page_number,
+                                start_order=len(blocks),
+                                min_body_lines=(
+                                    self.settings.paddle_section_heading_min_body_lines
+                                ),
+                                line_overlap=(
+                                    self.settings.paddle_section_heading_line_overlap
+                                ),
+                                max_prefix_ratio=(
+                                    self.settings.paddle_inline_heading_max_prefix_ratio
+                                ),
+                                include_text_blocks=page_number == 1,
+                            )
+                        )
+                        split_count += inline_split_count
+                    page_blocks, recovered_titles = _recover_page_title_region(
+                        page_blocks,
+                        text_lines,
+                        page=page_number,
+                        enabled=self.settings.paddle_title_region_recovery,
+                        min_width_ratio=self.settings.paddle_title_min_width_ratio,
+                    )
+                    page_blocks, recovered_authors = _recover_author_block_types(
+                        page_blocks,
+                        enabled=self.settings.paddle_author_region_recovery,
+                    )
+                    page_metrics["split_section_headings"] = split_count
+                    page_metrics["recovered_title_blocks"] = recovered_titles
+                    page_metrics["recovered_author_blocks"] = recovered_authors
                     for key in metric_totals:
                         metric_totals[key] += int(page_metrics[key])
                 blocks.extend(_scale_blocks(page_blocks, scale))
@@ -206,6 +299,14 @@ class PaddleBackend:
                 metric_totals["initially_covered_text_lines"] / detected_lines
                 if detected_lines
                 else 0.0
+            ),
+            "final_text_coverage": (
+                metric_totals["finally_covered_text_lines"] / detected_lines
+                if detected_lines
+                else 0.0
+            ),
+            "uncovered_text_lines": (
+                detected_lines - metric_totals["finally_covered_text_lines"]
             ),
         }
         return DocumentLayout(
@@ -278,7 +379,10 @@ class PaddleBackend:
                             )
                         )
         recognized.sort(key=lambda item: item.order)
-        recognized = _normalize_semantic_block_types(recognized)
+        recognized = _normalize_semantic_block_types(
+            recognized,
+            recover_author_region=self.settings.paddle_author_region_recovery,
+        )
         return DocumentLayout(
             source_path=str(Path(pdf_path)),
             is_scanned=True,
@@ -311,14 +415,14 @@ class PaddleBackend:
 
     def _recognize_table(self, crop_path: Path) -> tuple[str, str | None]:
         _configure_paddle_runtime(self.settings)
-        try:
-            from paddlex import create_model  # type: ignore[import-not-found]
-        except ImportError:
-            return "", None
-        classifier_dir = self.settings.paddle_table_classification_model_dir
-        if classifier_dir is None or not classifier_dir.is_dir():
-            return "", None
         if self._table_classifier is None:
+            classifier_dir = self.settings.paddle_table_classification_model_dir
+            if classifier_dir is None or not classifier_dir.is_dir():
+                return "", None
+            try:
+                from paddlex import create_model  # type: ignore[import-not-found]
+            except ImportError:
+                return "", None
             self._table_classifier = create_model(
                 "PP-LCNet_x1_0_table_cls",
                 model_dir=str(classifier_dir),
@@ -607,12 +711,348 @@ def _reconcile_layout_with_text(
         deduplicate_layout_blocks(updated),
         start_order=start_order,
     )
+    finally_uncovered = [
+        (line_bbox, line_score)
+        for line_bbox, line_score in text_lines
+        if not any(
+            _bbox_intersection_fraction(line_bbox, block.bbox) >= coverage_threshold
+            for block in reconciled
+        )
+    ]
+    recovery_groups = _merge_unassigned_text_lines(
+        finally_uncovered,
+        gap_ratio=merge_gap_ratio,
+    )
+    for bbox, confidence in recovery_groups:
+        reconciled.append(
+            LayoutBlock(
+                page=page,
+                block_type="text",
+                text="",
+                order=start_order + len(reconciled),
+                bbox=bbox,
+                confidence=confidence,
+                ocr_engine=None,
+            )
+        )
+    if recovery_groups:
+        added_groups += len(recovery_groups)
+        reconciled = _order_detected_blocks(reconciled, start_order=start_order)
+    finally_covered = sum(
+        any(
+            _bbox_intersection_fraction(line_bbox, block.bbox) >= coverage_threshold
+            for block in reconciled
+        )
+        for line_bbox, _ in text_lines
+    )
     return reconciled, {
         "detected_text_lines": len(text_lines),
         "initially_covered_text_lines": initially_covered,
+        "finally_covered_text_lines": finally_covered,
         "expanded_blocks": len(expanded_indices),
         "added_text_blocks": added_groups,
     }
+
+
+def _split_merged_section_regions(
+    blocks: list[LayoutBlock],
+    text_lines: list[tuple[tuple[float, float, float, float], float | None]],
+    *,
+    page: int,
+    start_order: int,
+    enabled: bool,
+    min_body_lines: int,
+    max_heading_width_ratio: float,
+    line_overlap: float,
+) -> tuple[list[LayoutBlock], int]:
+    if not enabled or not text_lines:
+        return blocks, 0
+
+    split_blocks: list[LayoutBlock] = []
+    split_count = 0
+    for block in blocks:
+        if block.block_type not in {"abstract", "section_header"} or block.bbox is None:
+            split_blocks.append(block)
+            continue
+        region_lines = sorted(
+            [
+                (bbox, score)
+                for bbox, score in text_lines
+                if _bbox_intersection_fraction(bbox, block.bbox) >= line_overlap
+            ],
+            key=lambda item: (item[0][1], item[0][0]),
+        )
+        if len(region_lines) < min_body_lines + 1:
+            split_blocks.append(block)
+            continue
+        heading_bbox, heading_score = region_lines[0]
+        body_lines = region_lines[1:]
+        heading_width = max(0.0, heading_bbox[2] - heading_bbox[0])
+        median_body_width = median(
+            max(1.0, bbox[2] - bbox[0]) for bbox, _ in body_lines
+        )
+        heading_center_y = (heading_bbox[1] + heading_bbox[3]) / 2
+        next_center_y = (body_lines[0][0][1] + body_lines[0][0][3]) / 2
+        if (
+            heading_width / median_body_width > max_heading_width_ratio
+            or next_center_y <= heading_center_y
+        ):
+            split_blocks.append(block)
+            continue
+
+        body_bbox = body_lines[0][0]
+        for line_bbox, _ in body_lines[1:]:
+            body_bbox = _bbox_union(body_bbox, line_bbox)
+        if block.block_type == "abstract":
+            existing_heading = any(
+                other is not block
+                and other.block_type == "section_header"
+                and _bbox_intersection_fraction(heading_bbox, other.bbox) >= line_overlap
+                for other in blocks
+            )
+            if not existing_heading:
+                split_blocks.append(
+                    LayoutBlock(
+                        page=page,
+                        block_type="section_header",
+                        text="",
+                        order=block.order,
+                        bbox=heading_bbox,
+                        confidence=heading_score or block.confidence,
+                        ocr_engine=None,
+                    )
+                )
+            split_blocks.append(block.model_copy(update={"bbox": body_bbox}))
+        else:
+            split_blocks.append(block.model_copy(update={"bbox": heading_bbox}))
+            split_blocks.append(
+                LayoutBlock(
+                    page=page,
+                    block_type="text",
+                    text="",
+                    order=block.order + 1,
+                    bbox=body_bbox,
+                    confidence=block.confidence,
+                    ocr_engine=None,
+                )
+            )
+        split_count += 1
+    return (
+        _order_detected_blocks(split_blocks, start_order=start_order),
+        split_count,
+    )
+
+
+def _inline_abstract_candidate_bboxes(
+    blocks: list[LayoutBlock],
+    text_lines: list[tuple[tuple[float, float, float, float], float | None]],
+    *,
+    min_body_lines: int,
+    line_overlap: float,
+    include_text_blocks: bool,
+) -> list[tuple[float, float, float, float]]:
+    candidates: list[tuple[float, float, float, float]] = []
+    for block in blocks:
+        eligible_types = {"abstract", "text"} if include_text_blocks else {"abstract"}
+        if block.block_type not in eligible_types or block.bbox is None:
+            continue
+        region_lines = sorted(
+            [
+                bbox
+                for bbox, _ in text_lines
+                if _bbox_intersection_fraction(bbox, block.bbox) >= line_overlap
+            ],
+            key=lambda bbox: (bbox[1], bbox[0]),
+        )
+        if len(region_lines) >= min_body_lines + 1 and region_lines[0] not in candidates:
+            candidates.append(region_lines[0])
+    return candidates
+
+
+def _recognize_heading_candidates(
+    recognizer: Any,
+    image_path: Path,
+    candidates: list[tuple[float, float, float, float]],
+    *,
+    output_dir: Path,
+    page: int,
+    min_confidence: float,
+) -> dict[tuple[float, float, float, float], str]:
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise ImportError("인라인 섹션 제목 분리에는 Pillow가 필요합니다.") from exc
+
+    recognized: dict[tuple[float, float, float, float], str] = {}
+    with Image.open(image_path) as image:
+        for index, bbox in enumerate(candidates):
+            x1, y1, x2, y2 = bbox
+            crop_box = (
+                max(0, int(x1)),
+                max(0, int(y1)),
+                min(image.width, int(x2 + 1)),
+                min(image.height, int(y2 + 1)),
+            )
+            if crop_box[2] <= crop_box[0] or crop_box[3] <= crop_box[1]:
+                continue
+            crop_path = output_dir / f"heading-{page}-{index}.png"
+            image.crop(crop_box).save(crop_path)
+            results = list(recognizer.predict(str(crop_path)))
+            if not results:
+                continue
+            payload = _as_mapping(results[0])
+            text = str(payload.get("rec_text", "")).strip()
+            try:
+                confidence = float(payload.get("rec_score", 0.0))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            if text and confidence >= min_confidence:
+                recognized[bbox] = text
+    return recognized
+
+
+def _split_inline_abstract_headings(
+    blocks: list[LayoutBlock],
+    text_lines: list[tuple[tuple[float, float, float, float], float | None]],
+    recognized_headings: dict[tuple[float, float, float, float], str],
+    *,
+    page: int,
+    start_order: int,
+    min_body_lines: int,
+    line_overlap: float,
+    max_prefix_ratio: float,
+    include_text_blocks: bool,
+) -> tuple[list[LayoutBlock], int]:
+    split_blocks: list[LayoutBlock] = []
+    split_count = 0
+    for block in blocks:
+        eligible_types = {"abstract", "text"} if include_text_blocks else {"abstract"}
+        if block.block_type not in eligible_types or block.bbox is None:
+            split_blocks.append(block)
+            continue
+        region_lines = sorted(
+            [
+                bbox
+                for bbox, _ in text_lines
+                if _bbox_intersection_fraction(bbox, block.bbox) >= line_overlap
+            ],
+            key=lambda bbox: (bbox[1], bbox[0]),
+        )
+        if len(region_lines) < min_body_lines + 1:
+            split_blocks.append(block)
+            continue
+        first_line = region_lines[0]
+        recognized_text = recognized_headings.get(first_line, "")
+        heading_match = ABSTRACT_HEADER_RE.match(recognized_text)
+        if heading_match is None:
+            split_blocks.append(block)
+            continue
+        remainder = recognized_text[heading_match.end() :].strip()
+        heading_bbox = first_line
+        first_body_bbox: tuple[float, float, float, float] | None = None
+        if remainder:
+            prefix_ratio = (heading_match.end() + 1) / len(recognized_text)
+            if prefix_ratio > max_prefix_ratio:
+                split_blocks.append(block)
+                continue
+            split_x = first_line[0] + (first_line[2] - first_line[0]) * prefix_ratio
+            heading_bbox = (first_line[0], first_line[1], split_x, first_line[3])
+            first_body_bbox = (split_x, first_line[1], first_line[2], first_line[3])
+
+        split_blocks.append(
+            LayoutBlock(
+                page=page,
+                block_type="section_header",
+                text="",
+                order=block.order,
+                bbox=heading_bbox,
+                confidence=block.confidence,
+                ocr_engine=None,
+            )
+        )
+        if first_body_bbox is not None:
+            split_blocks.append(
+                block.model_copy(
+                    update={"block_type": "abstract", "bbox": first_body_bbox}
+                )
+            )
+        remaining_body_bbox = region_lines[1]
+        for line_bbox in region_lines[2:]:
+            remaining_body_bbox = _bbox_union(remaining_body_bbox, line_bbox)
+        split_blocks.append(
+            block.model_copy(
+                update={"block_type": "abstract", "bbox": remaining_body_bbox}
+            )
+        )
+        split_count += 1
+    return (
+        _order_detected_blocks(split_blocks, start_order=start_order),
+        split_count,
+    )
+
+
+def _recover_page_title_region(
+    blocks: list[LayoutBlock],
+    text_lines: list[tuple[tuple[float, float, float, float], float | None]],
+    *,
+    page: int,
+    enabled: bool,
+    min_width_ratio: float,
+) -> tuple[list[LayoutBlock], int]:
+    if not enabled or page != 1 or any(block.block_type == "title" for block in blocks):
+        return blocks, 0
+    positioned_lines = [bbox for bbox, _ in text_lines]
+    if not positioned_lines:
+        return blocks, 0
+    page_min_x = min(bbox[0] for bbox in positioned_lines)
+    page_max_x = max(bbox[2] for bbox in positioned_lines)
+    page_width = page_max_x - page_min_x
+    if page_width <= 0:
+        return blocks, 0
+    boundary_y = min(
+        (
+            block.bbox[1]
+            for block in blocks
+            if block.bbox is not None
+            and block.block_type in {"abstract", "section_header"}
+        ),
+        default=float("inf"),
+    )
+    candidates = [
+        block
+        for block in blocks
+        if block.block_type == "text"
+        and block.bbox is not None
+        and block.bbox[3] < boundary_y
+        and block.bbox[2] - block.bbox[0] >= page_width * min_width_ratio
+        and block.bbox[2] - block.bbox[0] >= block.bbox[3] - block.bbox[1]
+    ]
+    if not candidates:
+        return blocks, 0
+    title = min(candidates, key=lambda block: (block.bbox[1], -(block.bbox[2] - block.bbox[0])))
+    return [
+        block.model_copy(update={"block_type": "title"}) if block is title else block
+        for block in blocks
+    ], 1
+
+
+def _recover_author_block_types(
+    blocks: list[LayoutBlock],
+    *,
+    enabled: bool,
+) -> tuple[list[LayoutBlock], int]:
+    if not enabled:
+        return blocks, 0
+    author_orders = _probable_author_region_orders(blocks)
+    recovered = 0
+    normalized: list[LayoutBlock] = []
+    for block in blocks:
+        if block.order in author_orders and block.block_type == "text":
+            normalized.append(block.model_copy(update={"block_type": "author"}))
+            recovered += 1
+        else:
+            normalized.append(block)
+    return normalized, recovered
 
 
 def _adjacent_abstract_index(
@@ -786,12 +1226,26 @@ def _order_detected_blocks(
     ]
 
 
-def _normalize_semantic_block_types(blocks: list[LayoutBlock]) -> list[LayoutBlock]:
+def _normalize_semantic_block_types(
+    blocks: list[LayoutBlock],
+    *,
+    recover_author_region: bool = True,
+) -> list[LayoutBlock]:
+    ordered = sorted(blocks, key=lambda item: item.order)
+    author_orders = (
+        _probable_author_region_orders(ordered) if recover_author_region else set()
+    )
     body_started_by_page: dict[int, bool] = {}
     normalized: list[LayoutBlock] = []
-    for block in sorted(blocks, key=lambda item: item.order):
+    for block in ordered:
+        if block.order in author_orders and block.block_type == "text":
+            normalized.append(block.model_copy(update={"block_type": "author"}))
+            continue
         body_started = body_started_by_page.get(block.page, False)
         if block.block_type == "section_header":
+            if ABSTRACT_HEADER_RE.match(block.text.strip()):
+                normalized.append(block)
+                continue
             body_started_by_page[block.page] = True
             normalized.append(block)
             continue
@@ -800,6 +1254,36 @@ def _normalize_semantic_block_types(blocks: list[LayoutBlock]) -> list[LayoutBlo
             continue
         normalized.append(block)
     return normalized
+
+
+def _probable_author_region_orders(blocks: list[LayoutBlock]) -> set[int]:
+    if not blocks:
+        return set()
+    first_page = min(block.page for block in blocks)
+    page_blocks = [block for block in blocks if block.page == first_page]
+    title_orders = [block.order for block in page_blocks if block.block_type == "title"]
+    if not title_orders:
+        return set()
+    title_end = max(title_orders)
+    boundary_orders = [
+        block.order
+        for block in page_blocks
+        if block.order > title_end
+        and block.block_type in {"abstract", "section_header"}
+    ]
+    if not boundary_orders:
+        return set()
+    boundary = min(boundary_orders)
+    return {
+        block.order
+        for block in page_blocks
+        if title_end < block.order < boundary
+        and block.block_type == "text"
+        and (
+            block.bbox is None
+            or block.bbox[2] - block.bbox[0] >= block.bbox[3] - block.bbox[1]
+        )
+    }
 
 
 def _top_left_key(block: LayoutBlock) -> tuple[float, float]:

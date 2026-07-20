@@ -460,6 +460,10 @@ class ReviewService:
             block.block_type == "title" and bool(block.effective_text.strip())
             for block in eligible
         )
+        author_detected = any(
+            block.block_type == "author" and bool(block.effective_text.strip())
+            for block in eligible
+        )
         title_consistent = self._title_consistent(eligible)
         tables = [block for block in eligible if block.block_type == "table"]
         structured_tables = [
@@ -479,6 +483,8 @@ class ReviewService:
             reasons.append("제목 영역 또는 제목 OCR 누락")
         elif not title_consistent:
             reasons.append("제목 OCR이 문서의 인용 메타데이터와 일치하지 않음")
+        if self.settings.automatic_ocr_require_author and not author_detected:
+            reasons.append("저자 영역 또는 저자 OCR 누락")
         if len(structured_tables) != len(tables):
             reasons.append(
                 f"표 구조화 {len(structured_tables)}/{len(tables)}개"
@@ -489,6 +495,7 @@ class ReviewService:
             recognized_blocks=len(recognized),
             ocr_coverage=coverage,
             title_detected=title_detected,
+            author_detected=author_detected,
             title_consistent=title_consistent,
             tables_detected=len(tables),
             tables_structured=len(structured_tables),
@@ -630,6 +637,7 @@ class ReviewService:
         output = BytesIO()
         layout_rows: list[str] = []
         ocr_rows: list[str] = []
+        skipped_incomplete_layout_pages = 0
         with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for document in self.store.list():
                 accepted = [
@@ -642,6 +650,17 @@ class ReviewService:
                 if not accepted:
                     continue
                 for page in document.pages:
+                    detected_page_blocks = [
+                        block
+                        for block in document.blocks
+                        if block.page == page.page and block.bbox is not None
+                    ]
+                    if not include_unreviewed and any(
+                        block.review_status == "unreviewed"
+                        for block in detected_page_blocks
+                    ):
+                        skipped_incomplete_layout_pages += 1
+                        continue
                     page_blocks = [block for block in accepted if block.page == page.page]
                     if not page_blocks:
                         continue
@@ -679,6 +698,9 @@ class ReviewService:
                         "format": "paperrag-training-v1",
                         "layout_pages": len(layout_rows),
                         "ocr_crops": len(ocr_rows),
+                        "skipped_incomplete_layout_pages": (
+                            skipped_incomplete_layout_pages
+                        ),
                         "created_at": datetime.now(UTC).isoformat(),
                     },
                     ensure_ascii=False,

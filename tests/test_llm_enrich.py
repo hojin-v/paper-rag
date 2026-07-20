@@ -64,6 +64,28 @@ def test_enrich_paragraph_retries_once_after_failure() -> None:
     assert enriched.is_topic_relevant is False
 
 
+def test_enrich_paragraph_retries_when_summary_contains_chinese() -> None:
+    client = FakeLLM(
+        [
+            {
+                "summary": "模型使用中文摘要。",
+                "keywords": ["문서 분석"],
+                "is_topic_relevant": True,
+            },
+            {
+                "summary": "모델이 문서를 분석한다.",
+                "keywords": ["문서 분석"],
+                "is_topic_relevant": True,
+            },
+        ]
+    )
+
+    enriched = enrich_paragraph(client, "The model analyzes documents.")
+
+    assert client.calls == 2
+    assert enriched.summary == "모델이 문서를 분석한다."
+
+
 def test_enrich_paragraph_falls_back_after_two_failures() -> None:
     client = FakeLLM([ValueError("bad"), ValueError("still bad")])
 

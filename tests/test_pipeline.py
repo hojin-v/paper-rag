@@ -16,6 +16,7 @@ from paperrag.ingest.pipeline import (
     STAGE_7,
     STAGE_8,
     IngestPipeline,
+    _extract_meta,
 )
 from paperrag.ingest.repository import InMemoryIngestRepository
 
@@ -31,7 +32,7 @@ class FakeLayoutBackend:
                 LayoutBlock(
                     page=1,
                     block_type="abstract",
-                    text="RAG retrieval improves paper search.",
+                    text="Abstract\nRAG retrieval improves paper search.",
                     order=3,
                 ),
                 LayoutBlock(page=1, block_type="section_header", text="Introduction", order=4),
@@ -87,6 +88,10 @@ def test_pipeline_e2e_with_fake_components(tmp_path: Path) -> None:
     assert report.totals["tables"] == 1
     assert report.totals["relations"] == 1
     assert repo.papers[report.paper_id]["title"] == "RAG Retrieval Study 2024"
+    assert repo.papers[report.paper_id]["authors"] == ["Kim", "Lee"]
+    assert repo.papers[report.paper_id]["abstract"] == (
+        "RAG retrieval improves paper search."
+    )
     assert len(repo.paragraphs) == 1
     assert len(repo.keywords) > 1
     assert len(repo.paper_keywords) > 1
@@ -101,6 +106,60 @@ def test_pipeline_e2e_with_fake_components(tmp_path: Path) -> None:
     stages = {row["stage"] for row in repo.job_stages if row["status"] == "done"}
     assert stages == {STAGE_1, STAGE_2, STAGE_3, STAGE_4, STAGE_5, STAGE_6, STAGE_7, STAGE_8}
     assert not [row for row in repo.job_stages if row["status"] == "failed"]
+
+
+def test_extract_meta_keeps_author_names_before_affiliations() -> None:
+    author_blocks = [
+        LayoutBlock(
+            page=1,
+            block_type="author",
+            text="Jiapeng\nWang",
+            order=1,
+            bbox=(158, 106, 239, 119),
+        ),
+        LayoutBlock(
+            page=1,
+            block_type="author",
+            text="Kai Ding\n∗2,3",
+            order=2,
+            bbox=(373, 103, 440, 121),
+        ),
+        LayoutBlock(
+            page=1,
+            block_type="author",
+            text="Lianwen Jin*1,3,4",
+            order=3,
+            bbox=(260, 103, 352, 121),
+        ),
+        LayoutBlock(
+            page=1,
+            block_type="author",
+            text="1 South China University of Technology, Guangzhou, China",
+            order=4,
+            bbox=(156, 119, 442, 135),
+        ),
+        LayoutBlock(
+            page=1,
+            block_type="author",
+            text="author@example.edu",
+            order=5,
+        ),
+    ]
+    abstract = LayoutBlock(
+        page=1,
+        block_type="abstract",
+        text="Abstract\nPaper summary",
+        order=6,
+    )
+
+    meta = _extract_meta(
+        {"title": [], "author": author_blocks, "abstract": [abstract]},
+        [*author_blocks, abstract],
+        "paper.pdf",
+    )
+
+    assert meta.authors == ["Jiapeng Wang", "Lianwen Jin", "Kai Ding"]
+    assert meta.abstract == "Paper summary"
 
 
 def test_pipeline_compensates_created_paper_after_llm_failure(tmp_path: Path) -> None:

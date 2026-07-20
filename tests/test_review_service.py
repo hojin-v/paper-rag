@@ -1,5 +1,6 @@
 from io import BytesIO
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 import zipfile
 
@@ -8,7 +9,7 @@ import pytest
 
 from paperrag.config import Settings
 from paperrag.ingest.models import DocumentLayout, LayoutBlock
-from paperrag.review.models import BlockCreate, BlockUpdate, ReviewBlock
+from paperrag.review.models import BlockCreate, BlockUpdate, ReviewBlock, ReviewDocument
 from paperrag.review.service import ReviewService
 from paperrag.review.viewer import build_viewer_html
 
@@ -45,6 +46,13 @@ def test_upload_review_update_and_training_export(tmp_path: Path) -> None:
     assert updated.blocks[0].effective_text == "교정된 제목"
     assert updated.blocks[0].detected_block_type == block.block_type
 
+    partial_archive_bytes = service.export_training_zip()
+    with zipfile.ZipFile(BytesIO(partial_archive_bytes)) as archive:
+        partial_manifest = json.loads(archive.read("manifest.json"))
+        assert partial_manifest["layout_pages"] == 0
+        assert partial_manifest["ocr_crops"] == 1
+        assert partial_manifest["skipped_incomplete_layout_pages"] == 1
+
     approved = service.approve_all(document.document_id)
     assert all(block.review_status != "unreviewed" for block in approved.blocks)
 
@@ -56,6 +64,7 @@ def test_upload_review_update_and_training_export(tmp_path: Path) -> None:
         manifest = json.loads(archive.read("manifest.json"))
         assert manifest["layout_pages"] == 1
         assert manifest["ocr_crops"] >= 1
+        assert manifest["skipped_incomplete_layout_pages"] == 0
 
 
 def test_viewer_contains_clickable_overlay_and_ocr_text(tmp_path: Path) -> None:
@@ -70,12 +79,18 @@ def test_viewer_contains_clickable_overlay_and_ocr_text(tmp_path: Path) -> None:
 
     rendered = build_viewer_html(document)
 
-    assert "onclick=\"selectBlock" in rendered
+    assert 'onclick="selectBlock' in rendered
     assert "모델 OCR 원문" in rendered
     assert "자동 유형" in rendered
     assert "자동 좌표" in rendered
     assert '<section id="layout-tools" hidden>' in rendered
     assert document.blocks[0].ocr_text in rendered
+    assert f'class="block-{document.blocks[0].block_type}"' in rendered
+    assert '<div class="legend">' in rendered
+    assert "const initialBlock=" in rendered
+    assert "grid-template-columns:minmax(0,1fr) minmax(300px,360px)" in rendered
+    assert "@media(max-width:720px)" in rendered
+    assert "aside{order:-1" in rendered
 
 
 def test_auto_backend_always_routes_to_full_ocr_paddle(tmp_path: Path) -> None:
@@ -130,6 +145,41 @@ def test_title_quality_rejects_publisher_logo_not_supported_by_citation() -> Non
     assert ReviewService._title_consistent(blocks) is False
 
 
+def test_automation_quality_requires_recognized_author(tmp_path: Path) -> None:
+    service = ReviewService(Settings(_env_file=None, review_dir=tmp_path / "review"))
+    now = datetime.now(UTC)
+    document = ReviewDocument(
+        document_id="missing-author",
+        filename="paper.pdf",
+        source_path=str(tmp_path / "paper.pdf"),
+        backend="paddle",
+        blocks=[
+            ReviewBlock(
+                block_id="title",
+                page=1,
+                block_type="title",
+                order=0,
+                ocr_text="Paper title",
+            ),
+            ReviewBlock(
+                block_id="abstract",
+                page=1,
+                block_type="abstract",
+                order=1,
+                ocr_text="Abstract text",
+            ),
+        ],
+        created_at=now,
+        updated_at=now,
+    )
+
+    quality = service._automation_quality(document)
+
+    assert quality.status == "needs_review"
+    assert quality.author_detected is False
+    assert "저자 영역 또는 저자 OCR 누락" in quality.reasons
+
+
 def test_staged_layout_then_region_ocr_review(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -159,9 +209,7 @@ def test_staged_layout_then_region_ocr_review(
                 ],
             )
 
-        def recognize_layout(
-            self, pdf_path: str, blocks: list[LayoutBlock]
-        ) -> DocumentLayout:
+        def recognize_layout(self, pdf_path: str, blocks: list[LayoutBlock]) -> DocumentLayout:
             recognized = [
                 block.model_copy(
                     update={
@@ -187,6 +235,7 @@ def test_staged_layout_then_region_ocr_review(
             _env_file=None,
             review_dir=tmp_path / "review",
             paddle_isolate_process=False,
+            automatic_ocr_require_author=False,
         )
     )
 
@@ -226,7 +275,9 @@ def test_staged_layout_then_region_ocr_review(
     layout_document = service.return_to_layout_review(document.document_id)
     assert layout_document.phase == "layout_review"
     assert all(
-        block.ocr_text == "" for block in layout_document.blocks if block.review_status != "rejected"
+        block.ocr_text == ""
+        for block in layout_document.blocks
+        if block.review_status != "rejected"
     )
     service.approve_all(document.document_id)
     ocr_document = service.run_reviewed_ocr(document.document_id)

@@ -10,6 +10,22 @@ import httpx
 from paperrag.config import Settings, get_settings
 from paperrag.ingest.models import EnrichedParagraph
 
+CJK_IDEOGRAPH_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+KOREAN_OUTPUT_RULE = (
+    "요약과 키워드는 한국어로 작성하고 한자 또는 중국어 문자를 사용하지 마라. "
+    "원문의 영문 기술 용어는 영어로 유지해도 된다."
+)
+KOREAN_OUTPUT_RETRY = (
+    "\n\nThe previous response was rejected. Act as a native Korean academic editor. "
+    "Write every Korean word in Hangul and never use Chinese or Japanese characters. "
+    "Keep model names and source English technical terms in English. Return JSON only."
+)
+JSON_SYSTEM_PROMPT = "반드시 유효한 JSON만 반환하라. 스키마: "
+KOREAN_JSON_SYSTEM_RULE = (
+    " 너는 한국어 논문 편집자다. JSON의 자연어 값은 반드시 한글과 원문의 "
+    "영문 기술 용어로만 작성한다. 중국어와 일본어 문자는 절대로 사용하지 않는다."
+)
+
 PARAGRAPH_SCHEMA_HINT = """
 {
   "summary": "string",
@@ -23,6 +39,7 @@ PARAGRAPH_PROMPT_TEMPLATE = """
 아래 단락의 1문장 요약, 핵심 키워드 1~3개, 연구 본문 관련 여부를 JSON으로만 반환하라.
 저자명, 소속, 이메일, 머리말, 꼬리말, 참고문헌만 있는 단락은
 is_topic_relevant=false이고 keywords=[]이다. 입력에 없는 내용을 추가하지 마라.
+{korean_output_rule}
 
 예시 입력:
 본 연구는 온프레미스 검색 시스템을 제안한다. 실험 결과 검색 정확도가 향상되었다.
@@ -35,6 +52,17 @@ John Doe, Example University, john@example.com
 {{"summary":"저자와 소속 정보이다.","keywords":[],"is_topic_relevant":false}}
 
 입력 단락:
+{text}
+""".strip()
+
+PARAGRAPH_KOREAN_RETRY_TEMPLATE = """
+You are a native Korean academic editor. Read the source paragraph and return one
+concise Korean summary sentence. Write every Korean word in Hangul and never use
+Chinese or Japanese characters. Keep model names and source English technical terms
+in English. Return exactly this JSON shape:
+{{"summary":"한국어 한 문장","keywords":["keyword 1","keyword 2"],"is_topic_relevant":true}}
+
+Source paragraph:
 {text}
 """.strip()
 
@@ -91,7 +119,7 @@ class OllamaClient:
             "messages": [
                 {
                     "role": "system",
-                    "content": "반드시 유효한 JSON만 반환하라. 스키마: " + schema_hint,
+                    "content": _system_prompt(self.settings, schema_hint),
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -131,12 +159,20 @@ class OllamaClient:
                 "max_output_tokens": self.settings.llm_max_output_tokens,
                 "prompt": prompt,
                 "schema_hint": schema_hint,
+                "system_prompt": _system_prompt(self.settings, schema_hint),
             },
             ensure_ascii=False,
             sort_keys=True,
         )
         cache_key = hashlib.sha256(key_payload.encode("utf-8")).hexdigest()
         return self.settings.llm_cache_dir / f"{cache_key}.json"
+
+
+def _system_prompt(settings: Settings, schema_hint: str) -> str:
+    prompt = JSON_SYSTEM_PROMPT + schema_hint
+    if settings.llm_forbid_cjk_ideographs:
+        prompt += KOREAN_JSON_SYSTEM_RULE
+    return prompt
 
 
 class PassthroughEnricher:
@@ -168,15 +204,23 @@ def enrich_paragraph(client: LLMClient | PassthroughEnricher, text: str) -> Enri
     if isinstance(client, PassthroughEnricher):
         return client.enrich_paragraph(text)
 
-    prompt = PARAGRAPH_PROMPT_TEMPLATE.format(text=text)
+    prompt = PARAGRAPH_PROMPT_TEMPLATE.format(
+        text=text,
+        korean_output_rule=KOREAN_OUTPUT_RULE,
+    )
     for attempt in range(2):
         try:
             data = client.generate_json(prompt, PARAGRAPH_SCHEMA_HINT)
+            _validate_korean_output(
+                client,
+                data.get("summary", ""),
+                *data.get("keywords", []),
+            )
             data["cleaned_text"] = _normalize_original_text(text)
             return EnrichedParagraph.model_validate(_coerce_json_dict(data))
         except Exception:
             if attempt == 0:
-                prompt += "\n\n이전 응답은 JSON 파싱 또는 스키마 검증에 실패했다. JSON만 다시 반환하라."
+                prompt = PARAGRAPH_KOREAN_RETRY_TEMPLATE.format(text=text)
                 continue
     if not _allow_degraded_result(client):
         raise LLMOutputError("단락 정제 LLM 응답이 두 번 연속 유효하지 않습니다.")
@@ -197,15 +241,17 @@ def extract_paper_keywords(
         abstract=abstract,
         summaries="\n".join(summaries[:20]),
     )
+    prompt += "\n" + KOREAN_OUTPUT_RULE
     for attempt in range(2):
         try:
             data = _coerce_json_dict(client.generate_json(prompt, KEYWORDS_SCHEMA_HINT))
             keywords = _clean_keywords(data.get("keywords", []))
+            _validate_korean_output(client, *keywords)
             if len(keywords) >= 3:
                 return keywords[:5]
         except Exception:
             if attempt == 0:
-                prompt += "\n\n이전 응답은 JSON 파싱 또는 스키마 검증에 실패했다. JSON만 다시 반환하라."
+                prompt += KOREAN_OUTPUT_RETRY
                 continue
     if not _allow_degraded_result(client):
         raise LLMOutputError("논문 키워드 LLM 응답이 두 번 연속 유효하지 않습니다.")
@@ -217,15 +263,17 @@ def summarize_table(client: LLMClient | PassthroughEnricher, table_text: str) ->
         return client.summarize_table(table_text)
 
     prompt = TABLE_PROMPT_TEMPLATE.format(table_text=table_text)
+    prompt += "\n" + KOREAN_OUTPUT_RULE
     for attempt in range(2):
         try:
             data = _coerce_json_dict(client.generate_json(prompt, TABLE_SCHEMA_HINT))
             summary = str(data.get("summary", "")).strip()
+            _validate_korean_output(client, summary)
             if summary:
                 return summary
         except Exception:
             if attempt == 0:
-                prompt += "\n\n이전 응답은 JSON 파싱 또는 스키마 검증에 실패했다. JSON만 다시 반환하라."
+                prompt += KOREAN_OUTPUT_RETRY
                 continue
     if not _allow_degraded_result(client):
         raise LLMOutputError("표 요약 LLM 응답이 두 번 연속 유효하지 않습니다.")
@@ -239,15 +287,17 @@ def summarize_abstract(client: LLMClient | PassthroughEnricher, abstract: str) -
     if isinstance(client, PassthroughEnricher):
         return text[:500]
     prompt = ABSTRACT_PROMPT_TEMPLATE.format(abstract=text)
+    prompt += "\n" + KOREAN_OUTPUT_RULE
     for attempt in range(2):
         try:
             data = _coerce_json_dict(client.generate_json(prompt, ABSTRACT_SCHEMA_HINT))
             summary = str(data.get("summary", "")).strip()
+            _validate_korean_output(client, summary)
             if summary:
                 return summary
         except Exception:
             if attempt == 0:
-                prompt += "\n\n이전 응답은 유효한 JSON이 아니었다. JSON만 다시 반환하라."
+                prompt += KOREAN_OUTPUT_RETRY
                 continue
     if not _allow_degraded_result(client):
         raise LLMOutputError("초록 요약 LLM 응답이 두 번 연속 유효하지 않습니다.")
@@ -259,6 +309,17 @@ def _allow_degraded_result(client: LLMClient) -> bool:
     if settings is None:
         return True
     return bool(getattr(settings, "allow_degraded_results", False))
+
+
+def _validate_korean_output(client: LLMClient, *values: object) -> None:
+    settings = getattr(client, "settings", None)
+    forbid_cjk = (
+        True
+        if settings is None
+        else bool(getattr(settings, "llm_forbid_cjk_ideographs", True))
+    )
+    if forbid_cjk and any(CJK_IDEOGRAPH_RE.search(str(value)) for value in values):
+        raise ValueError("한국어 출력에 한자 또는 중국어 문자가 포함됨")
 
 
 def _normalize_original_text(text: str) -> str:

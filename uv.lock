@@ -2363,6 +2363,12 @@ ingest-full = [
     { name = "paddlepaddle" },
     { name = "pymupdf" },
 ]
+ocr = [
+    { name = "kiwipiepy" },
+    { name = "paddleocr", extra = ["doc-parser"] },
+    { name = "paddlepaddle" },
+    { name = "pymupdf" },
+]
 ui = [
     { name = "streamlit" },
 ]
@@ -2377,15 +2383,19 @@ requires-dist = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "kiwipiepy", marker = "extra == 'ingest-full'" },
+    { name = "kiwipiepy", marker = "extra == 'ocr'" },
     { name = "numpy" },
     { name = "openpyxl" },
     { name = "paddleocr", extras = ["doc-parser"], marker = "extra == 'ingest-full'", specifier = "==3.7.0" },
+    { name = "paddleocr", extras = ["doc-parser"], marker = "extra == 'ocr'", specifier = "==3.7.0" },
     { name = "paddlepaddle", marker = "extra == 'ingest-full'", specifier = "==3.3.0" },
+    { name = "paddlepaddle", marker = "extra == 'ocr'", specifier = "==3.3.0" },
     { name = "pgvector" },
     { name = "psycopg", extras = ["binary"] },
     { name = "pydantic-settings" },
     { name = "pymupdf", marker = "extra == 'ingest'" },
     { name = "pymupdf", marker = "extra == 'ingest-full'" },
+    { name = "pymupdf", marker = "extra == 'ocr'" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "sentence-transformers", marker = "extra == 'embed'" },
@@ -2393,7 +2403,7 @@ requires-dist = [
     { name = "streamlit", marker = "extra == 'ui'" },
     { name = "uvicorn", extras = ["standard"] },
 ]
-provides-extras = ["dev", "ingest", "ingest-full", "embed", "worker", "ui"]
+provides-extras = ["dev", "ingest", "ocr", "ingest-full", "embed", "worker", "ui"]
 
 [[package]]
 name = "pgvector"

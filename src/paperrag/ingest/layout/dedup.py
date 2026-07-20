@@ -70,11 +70,27 @@ def deduplicate_layout_blocks(blocks: list[LayoutBlock]) -> list[LayoutBlock]:
                 and child.page == parent.page
                 and _area(child) <= _area(parent) * 0.75
                 and _contained_fraction(parent, child) >= 0.92
+                and (
+                    parent.block_type != "text"
+                    or child.block_type not in {"figure", "formula", "table"}
+                )
             ]
         )
         >= 2
     }
-    return [block for block in kept if id(block) not in containers]
+    without_containers = [block for block in kept if id(block) not in containers]
+    contained_duplicates = {
+        id(child)
+        for child in without_containers
+        for parent in without_containers
+        if child is not parent
+        and child.page == parent.page
+        and child.block_type == parent.block_type
+        and child.block_type in {"text", "section_header"}
+        and _area(child) < _area(parent)
+        and _contained_fraction(parent, child) >= 0.92
+    }
+    return [block for block in without_containers if id(block) not in contained_duplicates]
 
 
 def _quality_key(block: LayoutBlock) -> tuple[int, float]:

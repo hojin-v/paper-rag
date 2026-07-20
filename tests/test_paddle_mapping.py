@@ -15,9 +15,13 @@ from paperrag.ingest.layout.paddle_backend import (
     _map_text_detection_result,
     _map_result,
     _normalize_semantic_block_types,
+    _recover_author_block_types,
+    _recover_page_title_region,
     _render_pdf_pages,
     _reconcile_layout_with_text,
     _scale_blocks,
+    _split_inline_abstract_headings,
+    _split_merged_section_regions,
     _scaled_crop_box,
     _table_structure_quality,
 )
@@ -332,6 +336,114 @@ def test_layout_dedup_prefers_semantic_region_and_removes_large_container() -> N
     ]
 
 
+def test_layout_dedup_removes_single_text_block_contained_by_text_region() -> None:
+    blocks = [
+        LayoutBlock(
+            page=1,
+            block_type="text",
+            text="",
+            order=0,
+            bbox=(80, 120, 500, 200),
+        ),
+        LayoutBlock(
+            page=1,
+            block_type="text",
+            text="",
+            order=1,
+            bbox=(200, 135, 410, 150),
+        ),
+    ]
+
+    deduplicated = deduplicate_layout_blocks(blocks)
+
+    assert deduplicated == [blocks[0]]
+
+
+def test_layout_dedup_preserves_fallback_text_over_non_text_regions() -> None:
+    blocks = [
+        LayoutBlock(
+            page=1,
+            block_type="text",
+            text="",
+            order=0,
+            bbox=(20, 20, 500, 300),
+        ),
+        LayoutBlock(
+            page=1,
+            block_type="figure",
+            text="",
+            order=1,
+            bbox=(40, 40, 180, 120),
+        ),
+        LayoutBlock(
+            page=1,
+            block_type="formula",
+            text="",
+            order=2,
+            bbox=(220, 160, 360, 210),
+        ),
+    ]
+
+    deduplicated = deduplicate_layout_blocks(blocks)
+
+    assert blocks[0] in deduplicated
+
+
+def test_reconciliation_recovers_text_removed_as_layout_container() -> None:
+    blocks = [
+        LayoutBlock(
+            page=1,
+            block_type="text",
+            text="",
+            order=0,
+            bbox=(20, 40, 180, 80),
+        ),
+        LayoutBlock(
+            page=1,
+            block_type="text",
+            text="",
+            order=1,
+            bbox=(220, 40, 380, 80),
+        ),
+    ]
+    text_lines = [((10.0, 20.0, 400.0, 100.0), 0.97)]
+
+    reconciled, metrics = _reconcile_layout_with_text(
+        blocks,
+        text_lines,
+        page=1,
+        start_order=0,
+        coverage_threshold=0.8,
+        merge_gap_ratio=1.8,
+    )
+
+    assert metrics["finally_covered_text_lines"] == 1
+    assert any(block.bbox == text_lines[0][0] for block in reconciled)
+
+
+def test_layout_dedup_removes_truncated_section_header_inside_full_header() -> None:
+    blocks = [
+        LayoutBlock(
+            page=1,
+            block_type="section_header",
+            text="3.3\nComparisons with the SOTAs",
+            order=0,
+            bbox=(68, 674, 234, 686),
+        ),
+        LayoutBlock(
+            page=1,
+            block_type="section_header",
+            text="parisons with the SOI",
+            order=1,
+            bbox=(116, 674, 219, 683),
+        ),
+    ]
+
+    deduplicated = deduplicate_layout_blocks(blocks)
+
+    assert deduplicated == [blocks[0]]
+
+
 def test_table_classifier_routes_wired_and_wireless_labels() -> None:
     assert _best_table_classification(
         {
@@ -429,10 +541,272 @@ def test_text_detector_mapping_and_layout_reconciliation() -> None:
     assert metrics == {
         "detected_text_lines": 4,
         "initially_covered_text_lines": 1,
+        "finally_covered_text_lines": 4,
         "expanded_blocks": 1,
         "added_text_blocks": 1,
     }
     assert len(reconciled) == 3
+
+
+def test_splits_abstract_heading_from_abstract_body_lines() -> None:
+    blocks = [
+        LayoutBlock(
+            page=1,
+            block_type="abstract",
+            text="",
+            order=0,
+            bbox=(100, 100, 500, 260),
+            confidence=0.8,
+        )
+    ]
+    text_lines = [
+        ((240.0, 105.0, 350.0, 125.0), 0.98),
+        ((110.0, 140.0, 490.0, 160.0), 0.97),
+        ((110.0, 170.0, 480.0, 190.0), 0.96),
+        ((110.0, 200.0, 470.0, 220.0), 0.95),
+    ]
+
+    split, count = _split_merged_section_regions(
+        blocks,
+        text_lines,
+        page=1,
+        start_order=0,
+        enabled=True,
+        min_body_lines=2,
+        max_heading_width_ratio=0.72,
+        line_overlap=0.6,
+    )
+
+    assert count == 1
+    assert [block.block_type for block in split] == ["section_header", "abstract"]
+    assert split[0].bbox == text_lines[0][0]
+    assert split[1].bbox == (110.0, 140.0, 490.0, 220.0)
+
+
+def test_splits_body_lines_merged_into_section_header() -> None:
+    blocks = [
+        LayoutBlock(
+            page=2,
+            block_type="section_header",
+            text="",
+            order=4,
+            bbox=(60, 80, 520, 220),
+        )
+    ]
+    text_lines = [
+        ((70.0, 90.0, 210.0, 110.0), 0.99),
+        ((70.0, 130.0, 510.0, 150.0), 0.98),
+        ((70.0, 160.0, 500.0, 180.0), 0.97),
+    ]
+
+    split, count = _split_merged_section_regions(
+        blocks,
+        text_lines,
+        page=2,
+        start_order=4,
+        enabled=True,
+        min_body_lines=2,
+        max_heading_width_ratio=0.72,
+        line_overlap=0.6,
+    )
+
+    assert count == 1
+    assert [block.block_type for block in split] == ["section_header", "text"]
+    assert split[0].bbox == text_lines[0][0]
+    assert split[1].bbox == (70.0, 130.0, 510.0, 180.0)
+
+
+def test_does_not_split_full_width_first_abstract_line() -> None:
+    blocks = [
+        LayoutBlock(
+            page=1,
+            block_type="abstract",
+            text="",
+            order=0,
+            bbox=(100, 100, 500, 220),
+        )
+    ]
+    text_lines = [
+        ((110.0, 110.0, 490.0, 130.0), 0.98),
+        ((110.0, 140.0, 480.0, 160.0), 0.97),
+        ((110.0, 170.0, 470.0, 190.0), 0.96),
+    ]
+
+    split, count = _split_merged_section_regions(
+        blocks,
+        text_lines,
+        page=1,
+        start_order=0,
+        enabled=True,
+        min_body_lines=2,
+        max_heading_width_ratio=0.72,
+        line_overlap=0.6,
+    )
+
+    assert count == 0
+    assert split == blocks
+
+
+def test_splits_inline_abstract_heading_from_first_body_line() -> None:
+    blocks = [
+        LayoutBlock(
+            page=1,
+            block_type="abstract",
+            text="",
+            order=0,
+            bbox=(80, 100, 500, 220),
+        )
+    ]
+    first_line = (82.0, 105.0, 498.0, 125.0)
+    text_lines = [
+        (first_line, 0.98),
+        ((82.0, 135.0, 495.0, 155.0), 0.97),
+        ((82.0, 165.0, 490.0, 185.0), 0.96),
+    ]
+
+    split, count = _split_inline_abstract_headings(
+        blocks,
+        text_lines,
+        {first_line: "Abstract This paper proposes a layout model."},
+        page=1,
+        start_order=0,
+        min_body_lines=2,
+        line_overlap=0.6,
+        max_prefix_ratio=0.4,
+        include_text_blocks=False,
+    )
+
+    assert count == 1
+    assert [block.block_type for block in split] == [
+        "section_header",
+        "abstract",
+        "abstract",
+    ]
+    assert split[0].bbox is not None
+    assert split[0].bbox[2] == split[1].bbox[0]
+    assert split[2].bbox == (82.0, 135.0, 495.0, 185.0)
+
+
+def test_inline_abstract_split_requires_recognized_heading_prefix() -> None:
+    blocks = [
+        LayoutBlock(
+            page=1,
+            block_type="abstract",
+            text="",
+            order=0,
+            bbox=(80, 100, 500, 220),
+        )
+    ]
+    first_line = (82.0, 105.0, 498.0, 125.0)
+    text_lines = [
+        (first_line, 0.98),
+        ((82.0, 135.0, 495.0, 155.0), 0.97),
+        ((82.0, 165.0, 490.0, 185.0), 0.96),
+    ]
+
+    split, count = _split_inline_abstract_headings(
+        blocks,
+        text_lines,
+        {first_line: "This paper proposes a layout model."},
+        page=1,
+        start_order=0,
+        min_body_lines=2,
+        line_overlap=0.6,
+        max_prefix_ratio=0.4,
+        include_text_blocks=False,
+    )
+
+    assert count == 0
+    assert split == blocks
+
+
+def test_recovers_first_page_abstract_misclassified_as_text() -> None:
+    blocks = [
+        LayoutBlock(
+            page=1,
+            block_type="text",
+            text="",
+            order=0,
+            bbox=(80, 100, 500, 220),
+        )
+    ]
+    heading_line = (220.0, 105.0, 320.0, 125.0)
+    text_lines = [
+        (heading_line, 0.98),
+        ((82.0, 135.0, 495.0, 155.0), 0.97),
+        ((82.0, 165.0, 490.0, 185.0), 0.96),
+    ]
+
+    split, count = _split_inline_abstract_headings(
+        blocks,
+        text_lines,
+        {heading_line: "Abstract"},
+        page=1,
+        start_order=0,
+        min_body_lines=2,
+        line_overlap=0.6,
+        max_prefix_ratio=0.4,
+        include_text_blocks=True,
+    )
+
+    assert count == 1
+    assert [block.block_type for block in split] == ["section_header", "abstract"]
+
+
+def test_recovers_wide_first_page_title_and_horizontal_author_regions() -> None:
+    blocks = [
+        LayoutBlock(
+            page=1,
+            block_type="text",
+            text="Paper title",
+            order=0,
+            bbox=(80, 80, 520, 115),
+        ),
+        LayoutBlock(
+            page=1,
+            block_type="text",
+            text="First Author",
+            order=1,
+            bbox=(140, 130, 260, 150),
+        ),
+        LayoutBlock(
+            page=1,
+            block_type="text",
+            text="vertical marker",
+            order=2,
+            bbox=(20, 120, 40, 400),
+        ),
+        LayoutBlock(
+            page=1,
+            block_type="section_header",
+            text="Abstract",
+            order=3,
+            bbox=(240, 220, 330, 240),
+        ),
+    ]
+    text_lines = [
+        ((20.0, 80.0, 40.0, 400.0), 0.9),
+        ((80.0, 80.0, 520.0, 115.0), 0.99),
+        ((140.0, 130.0, 260.0, 150.0), 0.98),
+    ]
+
+    recovered, title_count = _recover_page_title_region(
+        blocks,
+        text_lines,
+        page=1,
+        enabled=True,
+        min_width_ratio=0.55,
+    )
+    recovered, author_count = _recover_author_block_types(recovered, enabled=True)
+
+    assert title_count == 1
+    assert author_count == 1
+    assert [block.block_type for block in recovered] == [
+        "title",
+        "author",
+        "text",
+        "section_header",
+    ]
 
 
 def test_overlapping_partial_titles_are_unioned() -> None:
@@ -513,3 +887,56 @@ def test_abstract_detected_after_section_is_treated_as_body_without_reordering()
         "text",
     ]
     assert [block.order for block in normalized] == list(range(6))
+
+
+def test_abstract_header_does_not_turn_following_abstract_into_body() -> None:
+    blocks = [
+        LayoutBlock(page=1, block_type="title", text="Paper", order=0),
+        LayoutBlock(page=1, block_type="section_header", text="Abstract", order=1),
+        LayoutBlock(page=1, block_type="abstract", text="Summary", order=2),
+        LayoutBlock(page=1, block_type="section_header", text="Introduction", order=3),
+        LayoutBlock(page=1, block_type="text", text="Body", order=4),
+    ]
+
+    normalized = _normalize_semantic_block_types(blocks)
+
+    assert [block.block_type for block in normalized] == [
+        "title",
+        "section_header",
+        "abstract",
+        "section_header",
+        "text",
+    ]
+
+
+def test_text_between_first_page_title_and_abstract_is_recovered_as_author() -> None:
+    blocks = [
+        LayoutBlock(page=1, block_type="title", text="Paper title", order=0),
+        LayoutBlock(page=1, block_type="text", text="First Author", order=1),
+        LayoutBlock(page=1, block_type="text", text="Example University", order=2),
+        LayoutBlock(page=1, block_type="abstract", text="Abstract", order=3),
+        LayoutBlock(page=1, block_type="text", text="Body", order=4),
+        LayoutBlock(page=2, block_type="text", text="Page two", order=5),
+    ]
+
+    normalized = _normalize_semantic_block_types(blocks)
+
+    assert [block.block_type for block in normalized] == [
+        "title",
+        "author",
+        "author",
+        "abstract",
+        "text",
+        "text",
+    ]
+
+
+def test_author_recovery_requires_a_semantic_boundary() -> None:
+    blocks = [
+        LayoutBlock(page=1, block_type="title", text="Paper title", order=0),
+        LayoutBlock(page=1, block_type="text", text="Body", order=1),
+    ]
+
+    normalized = _normalize_semantic_block_types(blocks)
+
+    assert [block.block_type for block in normalized] == ["title", "text"]

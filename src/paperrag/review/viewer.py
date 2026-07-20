@@ -19,6 +19,21 @@ BLOCK_LABELS = {
     "header_footer": "머리말/꼬리말",
 }
 
+BLOCK_COLORS = {
+    "title": "#c62828",
+    "author": "#7b1fa2",
+    "abstract": "#00796b",
+    "section_header": "#ef6c00",
+    "text": "#1565c0",
+    "table": "#2e7d32",
+    "table_caption": "#558b2f",
+    "figure": "#6a1b9a",
+    "figure_caption": "#8e24aa",
+    "formula": "#5d4037",
+    "reference": "#455a64",
+    "header_footer": "#616161",
+}
+
 
 def build_viewer_html(document: ReviewDocument, *, editable: bool = True) -> str:
     payload = json.dumps(
@@ -36,6 +51,18 @@ def build_viewer_html(document: ReviewDocument, *, editable: bool = True) -> str
         f'<option value="{name}">{html.escape(BLOCK_LABELS.get(name, name))}</option>'
         for name in sorted(BLOCK_TYPES)
     )
+    present_types = sorted({block.block_type for block in document.blocks})
+    block_styles = "".join(
+        f".overlay rect.block-{block_type}"
+        f"{{fill:{BLOCK_COLORS.get(block_type, '#1769e0')}26;"
+        f"stroke:{BLOCK_COLORS.get(block_type, '#1769e0')}}}"
+        for block_type in present_types
+    )
+    legend = "".join(
+        f'<span><i style="background:{BLOCK_COLORS.get(block_type, "#1769e0")}"></i>'
+        f"{html.escape(BLOCK_LABELS.get(block_type, block_type))}</span>"
+        for block_type in present_types
+    )
     return f"""<!doctype html>
 <html lang="ko">
 <head>
@@ -48,16 +75,21 @@ def build_viewer_html(document: ReviewDocument, *, editable: bool = True) -> str
 header{{position:sticky;top:0;z-index:20;padding:12px 18px;background:#172033;color:#fff}}
 header strong{{font-size:16px}} header span{{margin-left:12px;color:#b9c4d6}}
 header a{{float:right;color:#fff;background:#1769e0;padding:5px 10px;border-radius:6px;text-decoration:none}}
-.layout{{display:grid;grid-template-columns:minmax(520px,1fr) 360px;gap:16px;max-width:1500px;margin:16px auto;padding:0 16px}}
+.layout{{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,360px);gap:16px;max-width:1500px;margin:16px auto;padding:0 16px}}
+.pages{{min-width:0}}
 .page{{position:relative;margin:0 auto 20px;background:#fff;box-shadow:0 2px 12px #0002}}
 .page img{{display:block;width:100%;height:auto}}
 .overlay{{position:absolute;inset:0;width:100%;height:100%}}
 .overlay rect{{fill:#1769e022;stroke:#1769e0;stroke-width:1.5;vector-effect:non-scaling-stroke;cursor:pointer}}
+{block_styles}
 .overlay rect:hover,.overlay rect.selected{{fill:#ffb00044;stroke:#e46f00;stroke-width:3}}
 .overlay.drawing{{cursor:crosshair}} .overlay rect.draw-preview{{fill:#12a15033;stroke:#087f3f;pointer-events:none}}
 .overlay.editing rect.selected{{cursor:move}} .resize-handle{{fill:#fff;stroke:#087f3f;stroke-width:2;vector-effect:non-scaling-stroke;cursor:nwse-resize}}
 .page-number{{position:absolute;top:6px;left:6px;padding:2px 7px;background:#172033cc;color:#fff;border-radius:4px}}
-aside{{position:sticky;top:66px;align-self:start;max-height:calc(100vh - 82px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}}
+aside{{position:sticky;top:66px;align-self:start;max-height:calc(100vh - 82px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px}}
+.legend{{display:flex;flex-wrap:wrap;gap:6px 10px;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--line)}}
+.legend span{{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--muted)}}
+.legend i{{width:10px;height:10px;border-radius:2px}}
 .empty{{color:var(--muted)}} label{{display:block;margin:12px 0 4px;font-weight:700}}
 textarea,select{{width:100%;padding:9px;border:1px solid var(--line);border-radius:6px;background:#fff}}
 input[type=number]{{width:23%;padding:7px;border:1px solid var(--line);border-radius:6px}}
@@ -67,15 +99,16 @@ button{{margin-top:12px;width:100%;padding:10px;border:0;border-radius:7px;backg
 button.danger{{background:#b42318}}
 #message{{min-height:22px;margin-top:8px;color:#087f3f}}
 .read-only .edit-only{{display:none}} .edit-help{{margin:8px 0;padding:8px;background:#fff4d6;border-radius:6px;color:#725000}}
-@media(max-width:900px){{.layout{{display:block}} aside{{position:relative;top:auto;max-height:none;margin-bottom:16px}} .pages{{min-width:0}}}}
+@media(max-width:720px){{.layout{{display:flex;flex-direction:column}} aside{{order:-1;position:relative;top:auto;max-height:55vh;margin-bottom:16px}}}}
 </style>
 </head>
-<body class="{'editable' if editable else 'read-only'}">
-<header><strong>{html.escape(document.filename)}</strong><span>{'관리자 교정' if editable else '자동 처리 품질 모니터'} · {html.escape(document.phase)} · {html.escape(document.backend)} · {len(document.blocks)}개 영역</span><a href="?editable={'false' if editable else 'true'}">{'품질 모니터로 돌아가기' if editable else '관리자 교정 모드'}</a></header>
+<body class="{"editable" if editable else "read-only"}">
+<header><strong>{html.escape(document.filename)}</strong><span>{"관리자 교정 모드" if editable else "읽기 전용 모니터"} · {html.escape(document.phase)} · {html.escape(document.backend)} · {len(document.blocks)}개 영역</span><a href="?editable={"false" if editable else "true"}">{"읽기 전용 모니터로 전환" if editable else "관리자 교정 모드 열기"}</a></header>
 <main class="layout">
   <section class="pages">{page_markup}</section>
   <aside>
-    <section id="layout-tools" {'hidden' if document.phase != 'layout_review' or not editable else ''}>
+    <div class="legend">{legend}</div>
+    <section id="layout-tools" {"hidden" if document.phase != "layout_review" or not editable else ""}>
       <strong>누락 영역 추가</strong>
       <label for="new-block-type">새 영역 유형</label><select id="new-block-type">{options}</select>
       <button type="button" id="draw-toggle" onclick="toggleDrawMode()">페이지에서 박스 그리기 시작</button>
@@ -219,6 +252,8 @@ document.querySelectorAll('.overlay').forEach(svg=>{{
     location.reload();
   }});
 }});
+const initialBlock=state.blocks.find(item=>state.phase!=='layout_review'&&item.ocr_text)||state.blocks.find(item=>item.bbox);
+if(initialBlock)selectBlock(initialBlock.block_id);
 </script>
 </body></html>"""
 
@@ -232,7 +267,7 @@ def _page_markup(document: ReviewDocument, page_number: int) -> str:
         x1, y1, x2, y2 = block.bbox
         label = html.escape(BLOCK_LABELS.get(block.block_type, block.block_type))
         rectangles.append(
-            f'<rect data-id="{block.block_id}" x="{x1}" y="{y1}" '
+            f'<rect class="block-{block.block_type}" data-id="{block.block_id}" x="{x1}" y="{y1}" '
             f'width="{x2 - x1}" height="{y2 - y1}" onclick="selectBlock(\'{block.block_id}\')">'
             f"<title>{label}</title></rect>"
         )
@@ -242,5 +277,5 @@ def _page_markup(document: ReviewDocument, page_number: int) -> str:
         f'<img src="{image_url}" alt="{page_number}페이지">'
         f'<span class="page-number">{page_number}</span>'
         f'<svg class="overlay" data-page="{page_number}" viewBox="0 0 {page.width} {page.height}" preserveAspectRatio="none">'
-        f'{"".join(rectangles)}</svg></article>'
+        f"{''.join(rectangles)}</svg></article>"
     )

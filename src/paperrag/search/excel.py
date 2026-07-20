@@ -83,8 +83,10 @@ def _write_summary(sheet: Worksheet, data: ResultBundle) -> None:
             "검색 설명",
             "대표 논문 제목",
             "연관 논문 제목",
-            "유사도",
-            "선정 사유",
+            "대표 RAG 점수",
+            "대표 선정 사유",
+            "연관 관계 점수",
+            "연관 선정 사유",
             "생성 일시",
         ],
     )
@@ -101,6 +103,8 @@ def _write_summary(sheet: Worksheet, data: ResultBundle) -> None:
             related_title,
             data.primary_paper.score,
             data.primary_paper.reason,
+            data.related_paper.score if data.related_paper else None,
+            data.related_paper.reason if data.related_paper else None,
             data.created_at.isoformat(timespec="seconds"),
         ],
     )

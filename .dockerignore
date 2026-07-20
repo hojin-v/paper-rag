@@ -1,0 +1,14 @@
+.git
+.env
+.venv
+.vendor
+.pytest_cache
+.ruff_cache
+**/__pycache__
+*.py[cod]
+data
+models
+outputs
+*.xlsx
+*.gguf
+*.onnx

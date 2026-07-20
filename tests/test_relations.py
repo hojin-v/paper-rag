@@ -48,3 +48,6 @@ def test_build_relations_returns_top_scores_with_overlap_reason() -> None:
     assert paper_id == 20
     assert score == pytest.approx(0.6 * 1.0 + 0.3 * (1 / 3) + 0.1 * 0.9)
     assert "rag" in reason
+    assert "논문 임베딩 cosine 1.000*0.6=0.600" in reason
+    assert "키워드 Jaccard 0.333*0.3=0.100" in reason
+    assert "연도 근접도 0.900*0.1=0.090" in reason

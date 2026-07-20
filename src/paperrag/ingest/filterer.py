@@ -2,12 +2,14 @@ import re
 from collections.abc import Sequence
 
 from paperrag.config import Settings, get_settings
+from paperrag.ingest.layout.dedup import deduplicate_layout_blocks
 from paperrag.ingest.models import LayoutBlock
 
 EXCLUDED = {"figure", "figure_caption", "formula", "header_footer", "reference"}
 META_TYPES = {"title", "author", "abstract"}
 TABLE_TYPES = {"table", "table_caption"}
 REFERENCE_HEADER_RE = re.compile(r"^\s*(references|appendix|참고문헌|부록)\b", re.IGNORECASE)
+ABSTRACT_HEADER_RE = re.compile(r"^\s*(abstract|초록|요약)\b", re.IGNORECASE)
 FIGURE_CAPTION_RE = re.compile(r"^\s*(fig(?:ure)?\.?|그림)\s*\d+\b", re.IGNORECASE)
 
 
@@ -17,14 +19,18 @@ def split_blocks(
     settings: Settings | None = None,
 ) -> tuple[dict[str, list[LayoutBlock]], list[LayoutBlock], list[LayoutBlock]]:
     active_settings = settings or get_settings()
+    normalized_blocks = _recover_author_regions(
+        deduplicate_layout_blocks(list(blocks)),
+        active_settings,
+    )
     meta_blocks: dict[str, list[LayoutBlock]] = {block_type: [] for block_type in META_TYPES}
     body_blocks: list[LayoutBlock] = []
     table_blocks: list[LayoutBlock] = []
     after_references = False
     body_started = False
-    page_extents = _page_extents(blocks)
+    page_extents = _page_extents(normalized_blocks)
 
-    for block in sorted(blocks, key=lambda item: item.order):
+    for block in sorted(normalized_blocks, key=lambda item: item.order):
         if after_references:
             continue
         if REFERENCE_HEADER_RE.match(block.text.strip()):
@@ -39,6 +45,8 @@ def split_blocks(
                 after_references = True
             continue
         if block.block_type == "section_header":
+            if ABSTRACT_HEADER_RE.match(block.text.strip()):
+                continue
             body_started = True
         if block.block_type == "abstract" and body_started:
             body_blocks.append(block.model_copy(update={"block_type": "text"}))
@@ -53,6 +61,38 @@ def split_blocks(
             body_blocks.append(block)
 
     return meta_blocks, body_blocks, table_blocks
+
+
+def _recover_author_regions(
+    blocks: Sequence[LayoutBlock],
+    settings: Settings,
+) -> list[LayoutBlock]:
+    ordered = sorted(blocks, key=lambda item: item.order)
+    if not settings.paddle_author_region_recovery or not ordered:
+        return ordered
+    first_page = min(block.page for block in ordered)
+    page_blocks = [block for block in ordered if block.page == first_page]
+    title_orders = [block.order for block in page_blocks if block.block_type == "title"]
+    if not title_orders:
+        return ordered
+    title_end = max(title_orders)
+    boundary_orders = [
+        block.order
+        for block in page_blocks
+        if block.order > title_end
+        and block.block_type in {"abstract", "section_header"}
+    ]
+    if not boundary_orders:
+        return ordered
+    boundary = min(boundary_orders)
+    return [
+        block.model_copy(update={"block_type": "author"})
+        if block.page == first_page
+        and title_end < block.order < boundary
+        and block.block_type == "text"
+        else block
+        for block in ordered
+    ]
 
 
 def _page_extents(

@@ -41,6 +41,11 @@ def test_build_excel_writes_sections_paragraphs_and_table_cells(tmp_path: Path) 
     assert summary["C2"].value == "RAG"
     assert summary["F2"].value == "Primary RAG Paper"
     assert summary["G2"].value == "Related OCR Paper"
+    assert summary["H1"].value == "대표 RAG 점수"
+    assert summary["H2"].value == 0.89
+    assert summary["J1"].value == "연관 관계 점수"
+    assert summary["J2"].value == 0.77
+    assert summary["K2"].value == "겹치는 키워드: RAG"
 
     primary_info = workbook["대표 논문 정보"]
     assert primary_info["A1"].value == "논문 ID"

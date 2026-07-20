@@ -93,6 +93,45 @@ def test_late_abstract_label_is_kept_in_body_after_section_start() -> None:
     assert body[-1].block_type == "text"
 
 
+def test_abstract_section_header_is_not_added_to_body() -> None:
+    blocks = [
+        LayoutBlock(page=1, block_type="title", text="Title", order=0),
+        LayoutBlock(page=1, block_type="section_header", text="Abstract", order=1),
+        LayoutBlock(page=1, block_type="abstract", text="Paper summary", order=2),
+        LayoutBlock(page=1, block_type="section_header", text="1 Introduction", order=3),
+        LayoutBlock(page=1, block_type="text", text="Body", order=4),
+    ]
+
+    meta, body, _ = split_blocks(blocks)
+
+    assert [block.text for block in meta["abstract"]] == ["Paper summary"]
+    assert [block.text for block in body] == ["1 Introduction", "Body"]
+
+
+def test_legacy_text_between_title_and_abstract_is_excluded_as_author() -> None:
+    blocks = [
+        LayoutBlock(page=1, block_type="title", text="Title", order=0),
+        LayoutBlock(page=1, block_type="text", text="First Author", order=1),
+        LayoutBlock(page=1, block_type="text", text="Example University", order=2),
+        LayoutBlock(
+            page=1,
+            block_type="abstract",
+            text="Abstract\nPaper summary",
+            order=3,
+        ),
+        LayoutBlock(page=1, block_type="section_header", text="Introduction", order=4),
+        LayoutBlock(page=1, block_type="text", text="Body", order=5),
+    ]
+
+    meta, body, _ = split_blocks(blocks, settings=Settings(_env_file=None))
+
+    assert [block.text for block in meta["author"]] == [
+        "First Author",
+        "Example University",
+    ]
+    assert [block.text for block in body] == ["Introduction", "Body"]
+
+
 def test_small_bottom_footnote_is_excluded_without_dropping_body_block() -> None:
     blocks = [
         LayoutBlock(

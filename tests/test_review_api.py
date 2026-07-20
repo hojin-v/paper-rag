@@ -36,7 +36,7 @@ def test_upload_viewer_and_block_update_api(tmp_path: Path) -> None:
         viewer = _request("GET", f"/documents/{document_id}/viewer")
         assert viewer.status_code == 200
         assert "모델 OCR 원문" in viewer.text
-        assert "자동 처리 품질 모니터" in viewer.text
+        assert "읽기 전용 모니터" in viewer.text
         assert 'class="read-only"' in viewer.text
         assert "관리자 교정 모드" in viewer.text
 

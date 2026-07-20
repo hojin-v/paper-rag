@@ -1,3 +1,11 @@
+"""수집 파이프라인 CLI 진입점: python -m paperrag.ingest.
+
+PDF 파일/디렉터리를 받아 STEP 1~8 IngestPipeline을 파일마다 실행하고, 콘솔 표
+출력과 docs/reports/ingest/YYYY-MM-DD.md 배치 리포트를 남긴다. dry-run/skip-llm/
+backend 옵션에 대한 운영 안전장치(운영 모드에서 진단 backend·LLM 생략 금지)도
+여기서 강제한다(DESIGN.md §3, docs/guide/04-ingest-pipeline.md 7단계).
+"""
+
 import argparse
 from collections import Counter
 from collections.abc import Sequence
@@ -14,6 +22,14 @@ from paperrag.ingest.repository import InMemoryIngestRepository, PostgresIngestR
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """CLI 인자를 파싱해 대상 PDF들에 대해 IngestPipeline을 순차 실행한다.
+
+    --skip-llm과 진단 backend(simple/docling)는 운영 오적재를 막기 위해 dry-run
+    이거나 명시적으로 허용 환경변수(PAPERRAG_ALLOW_DEGRADED_RESULTS,
+    PAPERRAG_ALLOW_DIAGNOSTIC_BACKENDS)가 켜져 있을 때만 허용한다. 파일 하나가
+    실패해도 나머지 파일 처리를 계속하고, 마지막에 실패 건수가 있으면 종료 코드
+    1을 반환해 배치 스크립트가 실패를 감지할 수 있게 한다.
+    """
     settings = get_settings()
     parser = argparse.ArgumentParser(prog="python -m paperrag.ingest")
     parser.add_argument("path", help="PDF 파일 또는 PDF 디렉터리")
@@ -60,12 +76,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _resolve_pdf_paths(path: Path) -> list[Path]:
+    """입력 경로가 디렉터리면 그 안의 *.pdf 전체(정렬), 파일이면 그 파일 하나만 반환."""
     if path.is_dir():
         return sorted(item for item in path.iterdir() if item.suffix.lower() == ".pdf")
     return [path]
 
 
 def _format_reports(reports: Sequence[IngestReport], failures: Sequence[tuple[str, str]]) -> str:
+    """실행 결과를 사람이 읽기 좋은 고정폭 표 문자열로 만들어 콘솔에 출력한다."""
     rows = [["source", "paper_id", "paragraphs", "keywords", "tables", "relations", "status"]]
     for report in reports:
         status = "failed" if report.errors else "done"
@@ -96,6 +114,12 @@ def _append_batch_report(
     reports: Sequence[IngestReport],
     failures: Sequence[tuple[str, str]],
 ) -> None:
+    """이번 배치 실행 결과를 docs/reports/ingest/YYYY-MM-DD.md에 append 형식으로 남긴다.
+
+    같은 날짜에 여러 번 배치를 돌려도 파일을 덮어쓰지 않고 이어 붙이며(운영에서
+    하루에 여러 배치를 실행할 수 있음을 고려), 단계별 성공/실패 건수와 실패 파일별
+    원인을 표로 기록한다.
+    """
     report_dir = Path("docs/reports/ingest")
     report_dir.mkdir(parents=True, exist_ok=True)
     report_path = report_dir / f"{datetime.now().date().isoformat()}.md"

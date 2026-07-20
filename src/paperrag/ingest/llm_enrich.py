@@ -1,3 +1,23 @@
+"""STEP 5 llm_enrich (paragraph enrichment): 단락 정제/요약/키워드, 논문 대표
+키워드, 표/초록 요약 생성.
+
+Ollama(Settings.ollama_base_url, Settings.llm_model)에 JSON 스키마를 강제하는
+프롬프트로 호출해 결과를 얻는다. 응답이 스키마를 못 지키거나 한자/중국어 문자가
+섞이면(_validate_korean_output) 한 번 더 강한 한국어 지시 프롬프트로 재시도하고,
+그래도 실패하면 Settings.allow_degraded_results가 true일 때만 원문을 그대로
+쓰는 PassthroughEnricher 폴백으로 넘어간다(운영 기본값은 false. 실패 단계로
+처리해 조용히 품질이 낮은 결과가 섞이지 않게 한다. docs/guide/04-ingest-pipeline.md
+7단계 참고).
+
+이 재시도 1회 + 실패 시 원문 그대로 통과시키는 폴백 경로는
+docs/reports/benchmarks/2026-07-04-llm-cpu.md에서 실측 확인됐다: 7B 모델이
+900초 타임아웃을 2회 연속 겪은 상황에서도 Passthrough 폴백 덕분에 파이프라인
+전체가 막히지 않고 계속 진행됐다. 다만 2026-07-12 실측
+(docs/reports/assessments/2026-07-12-two-paper-ocr-evaluation.md)에서는 요약
+언어 오염(중국어/벵골어 혼입)과 관련성 오판정 사례도 함께 확인되었으므로, 이
+폴백은 "막힘 방지"를 보장할 뿐 품질까지 보장하지는 않는다.
+"""
+
 import hashlib
 import json
 import re
@@ -10,6 +30,8 @@ import httpx
 from paperrag.config import Settings, get_settings
 from paperrag.ingest.models import EnrichedParagraph
 
+# LLM 요약/키워드 출력에서 한자·중국어 문자를 탐지하는 정규식. 2026-07-12 실측에서
+# Qwen2.5 7B 출력에 중국어·벵골어가 섞이는 언어 오염이 확인되어 검증에 사용한다.
 CJK_IDEOGRAPH_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 KOREAN_OUTPUT_RULE = (
     "요약과 키워드는 한국어로 작성하고 한자 또는 중국어 문자를 사용하지 마라. "
@@ -106,10 +128,25 @@ class LLMOutputError(RuntimeError):
 
 
 class OllamaClient:
+    """Ollama /api/chat을 호출해 JSON 응답을 받는 STEP 5 운영용 LLM 클라이언트.
+
+    format="json"으로 스키마를 강제하고, 동일 프롬프트+모델+설정 조합에 대해서는
+    파일 캐시(llm_cache_dir)를 사용해 재실행 비용을 줄인다. 2026-07-12 실측에서
+    확인된 것처럼 논문 1편 처리 중 장애로 재시작해도 이미 생성한 단락 결과를
+    다시 계산하지 않도록 하는 안전장치다.
+    """
+
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
     def generate_json(self, prompt: str, schema_hint: str) -> dict[str, Any]:
+        """캐시를 먼저 확인하고 없으면 Ollama에 호출해 JSON 딕셔너리를 반환한다.
+
+        timeout은 Settings.llm_timeout_seconds를 사용하며, 이 값을 넘기면 httpx가
+        예외를 던져 상위 enrich_paragraph 등의 재시도/폴백 로직으로 넘어간다
+        (docs/reports/benchmarks/2026-07-04-llm-cpu.md에서 7B 모델 900초 타임아웃
+        실측 근거).
+        """
         cache_path = self._cache_path(prompt, schema_hint)
         if cache_path is not None and cache_path.is_file():
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -150,6 +187,7 @@ class OllamaClient:
         return result
 
     def _cache_path(self, prompt: str, schema_hint: str) -> Path | None:
+        """캐시가 비활성화되어 있으면 None, 아니면 요청 내용 해시로 캐시 파일 경로를 만든다."""
         if not self.settings.llm_cache_enabled:
             return None
         key_payload = json.dumps(
@@ -169,6 +207,7 @@ class OllamaClient:
 
 
 def _system_prompt(settings: Settings, schema_hint: str) -> str:
+    """JSON 스키마 강제 지시문을 만들고, 설정에 따라 한자/일어 금지 규칙을 덧붙인다."""
     prompt = JSON_SYSTEM_PROMPT + schema_hint
     if settings.llm_forbid_cjk_ideographs:
         prompt += KOREAN_JSON_SYSTEM_RULE
@@ -176,10 +215,21 @@ def _system_prompt(settings: Settings, schema_hint: str) -> str:
 
 
 class PassthroughEnricher:
+    """LLM 호출 없이 원문을 그대로 통과시키는 개발/폴백용 정제기.
+
+    STEP 5의 두 가지 상황에서 쓰인다: (1) CLI --skip-llm(dry-run 또는
+    PAPERRAG_ALLOW_DEGRADED_RESULTS=true 개발 모드)에서 처음부터 이 클래스를 사용,
+    (2) 운영 중 실제 LLM 응답이 재시도까지 실패했을 때 allow_degraded_results가
+    true이면 마지막 안전장치로 이 클래스의 결과를 대신 사용한다. 두 경우 모두
+    요약은 원문 앞부분을 자르는 수준이고 키워드는 규칙 기반 폴백만 제공하므로
+    품질을 보장하지 않는다.
+    """
+
     def generate_json(self, prompt: str, schema_hint: str) -> dict[str, Any]:
         raise ValueError("PassthroughEnricher는 LLM JSON 생성을 수행하지 않습니다.")
 
     def enrich_paragraph(self, text: str) -> EnrichedParagraph:
+        """원문을 그대로 cleaned_text로 쓰고 앞 200자를 요약으로 삼는 패스스루."""
         cleaned = text.strip()
         return EnrichedParagraph(
             cleaned_text=cleaned,
@@ -194,13 +244,26 @@ class PassthroughEnricher:
         abstract: str,
         summaries: Sequence[str],
     ) -> list[str]:
+        """제목/초록/요약 텍스트에서 빈도 기반 규칙으로 대표 키워드 후보를 뽑는다."""
         return _fallback_keywords(" ".join([title, abstract, *summaries]))
 
     def summarize_table(self, table_text: str) -> str:
+        """표 본문 앞 200자를 그대로 요약으로 사용하는 패스스루."""
         return table_text.strip()[:200]
 
 
 def enrich_paragraph(client: LLMClient | PassthroughEnricher, text: str) -> EnrichedParagraph:
+    """STEP 5의 핵심 함수: 단락 원문 1개를 LLM 1회 호출로 정제/요약/키워드/관련성 JSON으로 바꾼다.
+
+    client가 PassthroughEnricher면 곧바로 패스스루 결과를 반환한다(개발 모드).
+    그 외에는 한국어 출력 규칙을 포함한 프롬프트로 호출하고, 결과에 한자/중국어
+    문자가 섞여 있으면(_validate_korean_output) 예외로 간주해 더 강한 한국어
+    강제 프롬프트(PARAGRAPH_KOREAN_RETRY_TEMPLATE)로 1회 재시도한다. 재시도까지
+    실패하면 allow_degraded_results 설정에 따라 LLMOutputError로 실패 처리하거나
+    PassthroughEnricher 결과로 조용히 대체한다 — 이 폴백 경로는
+    docs/reports/benchmarks/2026-07-04-llm-cpu.md에서 실제 타임아웃 상황에
+    파이프라인이 멈추지 않음을 확인한 안전장치다.
+    """
     if isinstance(client, PassthroughEnricher):
         return client.enrich_paragraph(text)
 
@@ -233,6 +296,12 @@ def extract_paper_keywords(
     abstract: str,
     summaries: Sequence[str],
 ) -> list[str]:
+    """STEP 5에서 논문 단위 대표 키워드 3~5개를 생성한다(제목/초록/단락 요약 최대 20개 근거).
+
+    재시도까지 3개 미만이면 실패로 간주해 KOREAN_OUTPUT_RETRY를 덧붙여 다시
+    시도하고, 그래도 실패하면 enrich_paragraph와 동일하게 allow_degraded_results
+    여부로 예외 또는 규칙 기반 폴백(_fallback_keywords)을 선택한다.
+    """
     if isinstance(client, PassthroughEnricher):
         return client.extract_keywords(title, abstract, summaries)
 
@@ -259,6 +328,7 @@ def extract_paper_keywords(
 
 
 def summarize_table(client: LLMClient | PassthroughEnricher, table_text: str) -> str:
+    """STEP 5에서 표 1개의 요약 문장을 생성한다. 실패 시 표 원문 앞 200자로 폴백."""
     if isinstance(client, PassthroughEnricher):
         return client.summarize_table(table_text)
 
@@ -281,6 +351,10 @@ def summarize_table(client: LLMClient | PassthroughEnricher, table_text: str) ->
 
 
 def summarize_abstract(client: LLMClient | PassthroughEnricher, abstract: str) -> str:
+    """STEP 5에서 논문 초록을 2문장 이내로 요약한다(papers.abstract_summary 컬럼용).
+
+    초록이 없으면 호출 없이 빈 문자열을 반환한다. 실패 시 원문 앞 500자로 폴백한다.
+    """
     text = abstract.strip()
     if not text:
         return ""
@@ -305,6 +379,7 @@ def summarize_abstract(client: LLMClient | PassthroughEnricher, abstract: str) -
 
 
 def _allow_degraded_result(client: LLMClient) -> bool:
+    """운영 저하 결과(패스스루 폴백) 허용 여부. client에 settings가 없으면 안전하게 허용(True)."""
     settings = getattr(client, "settings", None)
     if settings is None:
         return True
@@ -312,6 +387,13 @@ def _allow_degraded_result(client: LLMClient) -> bool:
 
 
 def _validate_korean_output(client: LLMClient, *values: object) -> None:
+    """LLM 출력 문자열들에 한자/중국어 문자가 섞였는지 검사해 있으면 예외를 던진다.
+
+    2026-07-12 실측에서 Qwen2.5 7B가 한국어 요약에 중국어·벵골어 문자를 섞어
+    내보낸 사례가 확인되어 도입한 검증이다. 이 예외는 enrich_paragraph 등의
+    재시도 루프에서 "응답 실패"로 취급되어 강화된 한국어 강제 프롬프트로
+    재시도하는 트리거가 된다.
+    """
     settings = getattr(client, "settings", None)
     forbid_cjk = (
         True
@@ -323,10 +405,12 @@ def _validate_korean_output(client: LLMClient, *values: object) -> None:
 
 
 def _normalize_original_text(text: str) -> str:
+    """cleaned_text에 저장하기 전 단락 원문의 줄바꿈/연속 공백을 한 칸으로 축약한다."""
     return " ".join(text.split())
 
 
 def _coerce_json_dict(value: Any) -> dict[str, Any]:
+    """LLM 응답이 dict든 JSON 문자열이든 동일하게 dict로 강제 변환한다."""
     if isinstance(value, dict):
         return value
     if isinstance(value, str):
@@ -335,6 +419,7 @@ def _coerce_json_dict(value: Any) -> dict[str, Any]:
 
 
 def _clean_keywords(value: Any) -> list[str]:
+    """키워드 리스트에서 공백/중복을 제거해 정리한다. 리스트가 아니면 빈 리스트."""
     if not isinstance(value, list):
         return []
     cleaned: list[str] = []
@@ -346,6 +431,11 @@ def _clean_keywords(value: Any) -> list[str]:
 
 
 def _fallback_keywords(text: str) -> list[str]:
+    """LLM 없이(또는 LLM 실패 시) 영문/한글 토큰 빈도로 대표 키워드 후보를 뽑는 규칙 기반 폴백.
+
+    영문은 3자 이상 알파벳 토큰, 한글은 2자 이상 음절 토큰만 대상으로 하고
+    불용어(this/that/논문/연구 등)를 제외한 뒤 빈도 내림차순 상위 5개를 반환한다.
+    """
     tokens = re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}|[가-힣]{2,}", text.lower())
     stopwords = {"this", "that", "with", "from", "study", "paper", "논문", "연구", "결과"}
     counts: dict[str, int] = {}

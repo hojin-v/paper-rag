@@ -1,3 +1,14 @@
+"""전체 STEP 1~8 오케스트레이션 — 논문 PDF 1편을 받아 DB 적재까지 실행한다.
+
+IngestPipeline.run()이 source check(1) -> layout(2) -> filter(3) -> paragraph(4)
+-> llm_enrich(5) -> keywords(6) -> embed(7) -> relate(8) 순서로 각 단계를
+호출하고, 단계마다 processing_jobs에 running/done/failed 상태를 기록한다
+(DESIGN.md §3, §4, docs/guide/04-ingest-pipeline.md 7단계). STEP 3 이후
+어느 단계에서든 예외가 나면 이미 생성된 papers 행과 종속 데이터를 보상 삭제해
+실패한 논문이 DB에 반쪽짜리로 남지 않게 한다(2026-07-12 실측에서 확인된
+운영 공백을 메운 조치, docs/reports/assessments/2026-07-12-two-paper-ocr-evaluation.md).
+"""
+
 import re
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -28,6 +39,8 @@ from paperrag.ingest.paragraphs import build_paragraphs
 from paperrag.ingest.relations import build_relations
 from paperrag.ingest.repository import IngestRepository, ParagraphRecord
 
+# processing_jobs.stage에 기록되는 단계 이름. docs/guide/04-ingest-pipeline.md
+# 7단계 표의 STEP 이름과 그대로 맞춘다.
 STAGE_1 = "step1_source_check"
 STAGE_2 = "step2_layout"
 STAGE_3 = "step3_filter"
@@ -36,15 +49,19 @@ STAGE_5 = "step5_llm_enrich"
 STAGE_6 = "step6_keywords"
 STAGE_7 = "step7_embed"
 STAGE_8 = "step8_relate"
+# 초록 앞에 붙는 "Abstract:"/"초록" 같은 절 제목을 본문에서 떼어내기 위한 패턴.
 ABSTRACT_HEADING_RE = re.compile(
     r"^\s*(?:abstract|초록|요약)\s*(?:[:：.\-–—]\s*)?(?:\r?\n|\s+)",
     re.IGNORECASE,
 )
+# 저자 블록 안에서 "소속(대학/연구소/이메일 등)"이 시작되는 지점을 찾아 그 위쪽만
+# 저자명으로 인정하기 위한 패턴.
 AFFILIATION_RE = re.compile(
     r"(?:@|\b(?:university|institute|laborator(?:y|ies)|research|department|"
     r"school|college|centre|center|corporation|company|\bco\.|\bltd\.?|\binc\.?)\b)",
     re.IGNORECASE,
 )
+# 저자명 뒤에 붙는 각주 기호(*, †, ‡)나 소속 번호(위첨자 숫자)를 제거하기 위한 패턴.
 AUTHOR_MARKER_RE = re.compile(
     r"\s*[*∗†‡]\s*\d*(?:\s*,\s*\d+)*"
     r"|\d+\s*[*∗†‡](?=\s*(?:,|$))"
@@ -53,6 +70,14 @@ AUTHOR_MARKER_RE = re.compile(
 
 
 class IngestPipeline:
+    """논문 PDF 1편에 대해 STEP 1~8을 순서대로 실행하는 오케스트레이터.
+
+    repo(저장소)·layout_backend(레이아웃+OCR)·llm(정제/요약/키워드)·embedder(임베딩)
+    네 가지 협력 객체를 주입받아 실제 I/O는 위임하고, 이 클래스는 단계 순서·
+    실패 처리·리포트 기록만 책임진다. `cli.py`가 dry-run/운영 여부에 따라 다른
+    구현체(InMemoryIngestRepository vs PostgresIngestRepository 등)를 주입한다.
+    """
+
     def __init__(
         self,
         repo: IngestRepository,
@@ -69,11 +94,23 @@ class IngestPipeline:
         self.settings = settings or get_settings()
 
     def run(self, pdf_path: str) -> IngestReport:
+        """PDF 한 편을 STEP 1~8 순서로 처리하고 IngestReport를 반환한다.
+
+        내부 `stage()` 헬퍼가 각 단계 실행 전후로 processing_jobs에
+        running/done/failed를 기록하고, 실패 시 예외를 다시 던져 파이프라인을
+        중단시킨다. STEP 3에서 paper_id가 생성된 이후 어느 단계에서 실패하든
+        바깥쪽 try/except가 해당 paper_id와 종속 데이터를 보상 삭제해, 실패한
+        논문이 DB에 반쪽 상태로 남지 않게 한다(현재는 부분 삭제 수준이며,
+        stage 7에서 이미 갱신된 전역 키워드 frequency까지 되돌리는 완전한
+        단일 트랜잭션은 아직 미구현 — 2026-07-12 실측 문서의 남은 조치 항목).
+        """
         path = str(Path(pdf_path))
         report = IngestReport(source_path=path)
         paper_id: int | None = None
 
         def stage(name: str, action: Callable[[], tuple[object, int]]) -> object:
+            # 단계 실행 전 running, 성공 시 done, 예외 시 failed를 processing_jobs에
+            # 기록한 뒤 예외를 다시 던져 run() 바깥의 보상 삭제 로직으로 넘긴다.
             nonlocal paper_id
             self.repo.set_job_stage(paper_id, name, "running")
             try:
@@ -94,6 +131,8 @@ class IngestPipeline:
         report.is_scanned = layout.is_scanned
 
         def filter_and_save() -> tuple[tuple[PaperMeta, list[LayoutBlock], list[LayoutBlock]], int]:
+            # STEP 3 필터링과 동시에 papers 행을 만든다 — paper_id가 있어야 STEP 4
+            # 이후 실패 시 보상 삭제 대상(nonlocal paper_id)을 특정할 수 있기 때문이다.
             nonlocal paper_id
             filtered_payload, filtered_count = self._filter_blocks(layout.blocks, path)
             meta_for_save, _, _ = filtered_payload
@@ -105,6 +144,9 @@ class IngestPipeline:
         meta, body_blocks, table_blocks = filtered
         report.stages[STAGE_3].count = len(body_blocks) + len(table_blocks)
 
+        # STAGE_4~8은 paper_id가 이미 만들어진 뒤이므로, 이 구간에서 실패하면
+        # 아래 except에서 papers와 종속 데이터를 보상 삭제해 반쪽짜리 논문이
+        # 남지 않게 한다.
         try:
             paragraphs = stage(
                 STAGE_4,
@@ -163,6 +205,10 @@ class IngestPipeline:
             report.set_total("relations", len(relations))
             return report
         except Exception as error:
+            # 보상 삭제(compensating delete): STEP 4~8 중 실패하면 이미 저장된
+            # paper_id 행과 그 종속 데이터(단락/키워드 연결/표/관계)를 지워
+            # 실패한 논문이 "ingested" 상태의 반쪽 데이터로 남지 않게 한다.
+            # 삭제 자체가 실패해도 원래 예외를 삼키지 않고 note로 덧붙여 재발생시킨다.
             if paper_id is not None:
                 try:
                     self.repo.delete_paper(paper_id)
@@ -173,6 +219,12 @@ class IngestPipeline:
 
     @staticmethod
     def _validate_pdf_source(path: str) -> str:
+        """STEP 1 source check: 확장자·존재 여부·PDF 매직 바이트(%PDF-)를 검증한다.
+
+        운영 정책상 모든 PDF는 전체 페이지 이미지 OCR("full_ocr")로 처리하므로
+        이 함수는 digital/scanned를 구분하지 않고 항상 "full_ocr"을 반환한다
+        (triage.classify_pdf의 판정은 여기서 쓰이지 않는다).
+        """
         source = Path(path)
         if source.suffix.lower() != ".pdf":
             raise ValueError("입력 파일 확장자는 .pdf여야 합니다.")
@@ -188,6 +240,7 @@ class IngestPipeline:
         blocks: Sequence[LayoutBlock],
         source_path: str,
     ) -> tuple[tuple[PaperMeta, list[LayoutBlock], list[LayoutBlock]], int]:
+        """STEP 3: filterer.split_blocks로 블록을 분류하고 메타데이터를 추출한다."""
         meta_blocks, body_blocks, table_blocks = split_blocks(
             blocks,
             settings=self.settings,
@@ -204,6 +257,9 @@ class IngestPipeline:
         tuple[list[EnrichedParagraph], list[TableDraft], list[str], list[str], str],
         int,
     ]:
+        # STEP 5: 단락별 LLM 정제(1건당 1회 호출), 논문 대표 키워드, 표 요약,
+        # 초록 요약을 한 번에 생성한다. LLM 호출 실패는 llm_enrich 내부의
+        # 재시도/폴백에서 처리되므로 여기서는 결과만 모은다.
         enriched = [enrich_paragraph(self.llm, paragraph.original_text) for paragraph in paragraphs]
         summaries = [paragraph.summary for paragraph in enriched]
         paper_keywords = extract_paper_keywords(self.llm, meta.title, meta.abstract, summaries)
@@ -224,6 +280,14 @@ class IngestPipeline:
         enriched_paragraphs: Sequence[EnrichedParagraph],
         paper_keywords: Sequence[str],
     ) -> tuple[list[tuple[str, str, float]], int]:
+        """STEP 6: 논문 대표 키워드 후보를 정규화하고 keywords.py의 점수 공식으로 순위를 매긴다.
+
+        단락별 키워드(body_keywords)는 이 논문 안에서의 등장 빈도 집계용으로만
+        쓰고, 실제로 저장·점수화하는 키워드 표시형(display)은 STEP 5에서 뽑은
+        논문 대표 키워드(paper_keywords)를 기준으로 한다 — 2026-07-12 실측에서
+        지적된 "모든 단락 키워드를 대표 키워드로 승격하지 않는다"는 정책을 그대로
+        반영한 것이다.
+        """
         body_keywords = [
             keyword
             for paragraph in enriched_paragraphs
@@ -274,6 +338,14 @@ class IngestPipeline:
         table_summaries: Sequence[str],
         abstract_summary: str,
     ) -> tuple[tuple[list[float], set[str]], int]:
+        """STEP 7: 단락/키워드/표/논문 텍스트를 임베딩하고 전부 DB에 저장한다.
+
+        임베딩 대상은 DESIGN.md §3 STEP 7 그대로다: 단락은 cleaned_text(원문이
+        아니라 LLM 정제 결과), 키워드는 표시형(display), 표는 제목+요약, 논문은
+        제목+초록+대표 키워드를 이어붙인 텍스트. 논문 임베딩/요약은 STEP 3에서
+        이미 만든 papers 행을 UPDATE(update_paper_embedding/update_paper_enrichment)
+        하고, 단락·키워드·표는 새로 INSERT한다.
+        """
         paragraph_vectors = self.embedder.embed(
             [paragraph.cleaned_text for paragraph in enriched_paragraphs]
         )
@@ -341,6 +413,11 @@ class IngestPipeline:
         paper_embedding: list[float],
         normalized_keywords: set[str],
     ) -> tuple[list[tuple[int, float, str]], int]:
+        """STEP 8: 저장소에서 연관도 계산 후보 논문들을 가져와 relations.build_relations로 점수를 매기고 저장한다.
+
+        저장소가 list_relation_candidates를 지원하지 않으면(프로토콜 선택적 메서드)
+        빈 후보 목록으로 동작해 연관 논문 없이도 파이프라인이 실패하지 않게 한다.
+        """
         list_candidates = getattr(self.repo, "list_relation_candidates", None)
         candidates = list_candidates(paper_id) if callable(list_candidates) else []
         relations = build_relations(
@@ -362,6 +439,13 @@ def _extract_meta(
     all_blocks: Sequence[LayoutBlock],
     source_path: str,
 ) -> PaperMeta:
+    """STEP 3 산출물: title/author/abstract 메타 블록으로 PaperMeta를 조립한다.
+
+    제목이 비어 있으면(레이아웃이 제목을 못 찾은 경우) 소스 파일명을 대신
+    사용해 최소한의 식별자를 남긴다. 발행연도는 제목+초록+앞부분 20개 블록
+    텍스트에서 4자리 연도 패턴으로 추출한다(별도 메타데이터 소스가 없으므로
+    본문에서 추정하는 근사치).
+    """
     title = _join_block_text(meta_blocks.get("title", [])) or Path(source_path).stem
     authors = _extract_authors(meta_blocks.get("author", []))
     abstract = _strip_abstract_heading(
@@ -378,10 +462,18 @@ def _extract_meta(
 
 
 def _strip_abstract_heading(text: str) -> str:
+    """초록 텍스트 맨 앞의 "Abstract"/"초록" 같은 절 제목 한 번만 제거한다."""
     return ABSTRACT_HEADING_RE.sub("", text, count=1).strip()
 
 
 def _extract_authors(blocks: Sequence[LayoutBlock]) -> list[str]:
+    """저자 블록에서 소속·이메일이 시작되기 전까지의 줄만 저자명으로 모아 분리한다.
+
+    2026-07-12 실측에서 저자 블록이 이름+소속+이메일이 한 블록에 섞여 오는
+    사례가 확인되었으므로, 블록을 시각적 순서(_order_author_blocks)로 훑다가
+    AFFILIATION_RE에 처음 매치되는 줄을 만나면 그 블록에서 이후 줄은 버리고
+    이후 블록 처리도 중단한다.
+    """
     author_texts: list[str] = []
     for block in _order_author_blocks(blocks):
         name_lines: list[str] = []
@@ -403,6 +495,13 @@ def _extract_authors(blocks: Sequence[LayoutBlock]) -> list[str]:
 
 
 def _order_author_blocks(blocks: Sequence[LayoutBlock]) -> list[LayoutBlock]:
+    """저자 블록을 좌표(bbox) 기준으로 위→아래, 같은 줄이면 왼→오른쪽 시각 순서로 정렬한다.
+
+    OCR/레이아웃의 order 필드는 항상 시각적 배치와 일치하지 않을 수 있어(예:
+    여러 열로 나열된 저자명), 세로 중심 좌표가 비슷한(반높이 이내) 블록들을
+    같은 "행"으로 묶은 뒤 행 단위로 정렬한다. bbox가 없는 블록은 order로만
+    정렬해 뒤에 붙인다.
+    """
     positioned = [block for block in blocks if block.bbox is not None]
     unpositioned = [block for block in blocks if block.bbox is None]
     if not positioned:
@@ -449,10 +548,12 @@ def _order_author_blocks(blocks: Sequence[LayoutBlock]) -> list[LayoutBlock]:
 
 
 def _join_block_text(blocks: Sequence[LayoutBlock]) -> str:
+    """같은 유형의 블록 여러 개를 order 순서대로 줄바꿈으로 이어붙인다(제목/초록 등)."""
     return "\n".join(block.text.strip() for block in sorted(blocks, key=lambda item: item.order) if block.text.strip())
 
 
 def _split_authors(text: str) -> list[str]:
+    """정리된 저자 문자열을 쉼표/세미콜론/줄바꿈 기준으로 저자 목록으로 분리한다."""
     if not text.strip():
         return []
     return [
@@ -463,11 +564,17 @@ def _split_authors(text: str) -> list[str]:
 
 
 def _extract_year(text: str) -> int | None:
+    """텍스트에서 19xx/20xx 형태의 첫 4자리 연도를 찾아 발행연도로 추정한다."""
     match = re.search(r"\b(19\d{2}|20\d{2})\b", text)
     return int(match.group(1)) if match else None
 
 
 def _build_tables(table_blocks: Sequence[LayoutBlock]) -> list[TableDraft]:
+    """표 블록들을 order 순서로 훑어 직전 table_caption을 table의 제목으로 짝짓는다.
+
+    캡션이 표 바로 앞에 나온다는 레이아웃 관례를 가정한 것으로, 캡션이 없으면
+    table_title은 None으로 남는다.
+    """
     tables: list[TableDraft] = []
     pending_caption: str | None = None
     for block in sorted(table_blocks, key=lambda item: item.order):

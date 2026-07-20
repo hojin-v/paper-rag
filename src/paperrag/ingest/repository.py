@@ -1,3 +1,15 @@
+"""수집 파이프라인 저장소 — papers/paragraphs/keywords/paper_tables/paper_relations/
+processing_jobs 테이블에 대한 실제(PostgresIngestRepository) 및 테스트용
+(InMemoryIngestRepository) 구현.
+
+각 메서드는 `engine.begin()`으로 커넥션당 하나의 트랜잭션을 열고 그 안에서만
+INSERT/UPDATE를 수행한다(자동 커밋/롤백). `pipeline.py`의 STEP 4~8 실패 시
+보상 삭제(compensating delete)는 `delete_paper`가 담당하며, 현재는 papers
+행 삭제 시 DB의 FK ON DELETE CASCADE에 의존해 종속 데이터가 함께 지워지는
+구조다(전역 키워드 frequency까지 원복하는 단일 트랜잭션은 아직 미구현 —
+docs/reports/assessments/2026-07-12-two-paper-ocr-evaluation.md의 남은 조치 참고).
+"""
+
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -13,6 +25,8 @@ from paperrag.ingest.models import PaperMeta, TableDraft
 
 @dataclass(frozen=True)
 class ParagraphRecord:
+    """STEP 7에서 저장소에 전달하는 단락 저장 단위(원문+정제 결과+임베딩)."""
+
     section_name: str
     paragraph_order: int
     original_text: str
@@ -24,6 +38,16 @@ class ParagraphRecord:
 
 
 class IngestRepository(Protocol):
+    """수집 파이프라인이 필요로 하는 저장소 인터페이스.
+
+    `PostgresIngestRepository`(운영, PostgreSQL+pgvector)와
+    `InMemoryIngestRepository`(dry-run/테스트, DB 없이 메모리 dict)가 이 프로토콜을
+    구현하며, `pipeline.IngestPipeline`은 구체 타입에 의존하지 않고 이 인터페이스만
+    사용한다. `list_relation_candidates`/`update_paper_embedding`/
+    `update_paper_enrichment`는 STEP 7/8에서만 쓰이는 선택적 메서드라 여기 프로토콜에는
+    없고 `getattr(..., None)`로 존재 여부를 확인해 호출한다(`pipeline.py` 참고).
+    """
+
     def save_paper(
         self,
         meta: PaperMeta,
@@ -75,6 +99,15 @@ class IngestRepository(Protocol):
 
 
 class PostgresIngestRepository:
+    """PostgreSQL(+pgvector)에 실제로 적재하는 운영용 IngestRepository 구현.
+
+    모든 메서드는 `self.engine.begin()`으로 트랜잭션 하나를 열고 그 블록을 벗어나면
+    자동으로 커밋(예외 시 롤백)한다 — 메서드 1회 호출 = 트랜잭션 1개 단위이며,
+    STEP 하나 안에서 여러 메서드를 호출하면(예: STEP 7의 단락 저장 + 키워드
+    upsert + 표 저장) 각각 별도 트랜잭션으로 커밋된다는 뜻이다. 벡터 컬럼은
+    `CAST(:param AS vector)`로 pgvector 타입에 맞춰 넣는다.
+    """
+
     def __init__(self, settings: Settings | None = None, engine: Engine | None = None) -> None:
         self.settings = settings or get_settings()
         self.engine = engine or get_engine(self.settings)
@@ -85,6 +118,11 @@ class PostgresIngestRepository:
         source_path: str,
         embedding: list[float] | None = None,
     ) -> int:
+        """STEP 3: papers 행을 status='ingested'로 새로 만들고 paper_id를 반환한다.
+
+        이 시점에는 아직 임베딩이 없을 수 있어(embedding=None 허용) 이후 STEP 7의
+        `update_paper_embedding`이 같은 행을 UPDATE한다.
+        """
         statement = text(
             """
             INSERT INTO papers (
@@ -114,6 +152,15 @@ class PostgresIngestRepository:
         return int(paper_id)
 
     def delete_paper(self, paper_id: int) -> None:
+        """실패한 적재 실행의 보상 삭제(compensating delete): papers 행 1개만 지운다.
+
+        paragraphs/paper_keywords/paper_tables/paper_relations은 DB 마이그레이션에서
+        papers(paper_id)를 ON DELETE CASCADE로 참조하므로 이 DELETE 한 줄로 함께
+        삭제된다(db/migrations/0001_init.sql). 다만 STEP 6에서 이미 증가시킨
+        keywords.frequency나 keyword_aliases 병합은 되돌리지 않는다 — 전역 키워드
+        통계까지 포함하는 완전한 보상 트랜잭션은 아직 미구현이다
+        (2026-07-12 실측 문서의 남은 조치 항목).
+        """
         with self.engine.begin() as connection:
             connection.execute(
                 text("DELETE FROM papers WHERE paper_id = :paper_id"),
@@ -121,6 +168,7 @@ class PostgresIngestRepository:
             )
 
     def update_paper_embedding(self, paper_id: int, embedding: list[float]) -> None:
+        """STEP 7: papers.paper_embedding을 채우고 status를 다시 'ingested'로 확정한다."""
         with self.engine.begin() as connection:
             connection.execute(
                 text(
@@ -134,6 +182,7 @@ class PostgresIngestRepository:
             )
 
     def update_paper_enrichment(self, paper_id: int, abstract_summary: str) -> None:
+        """STEP 7: LLM이 생성한 초록 요약(abstract_summary)을 papers 행에 반영한다."""
         with self.engine.begin() as connection:
             connection.execute(
                 text("UPDATE papers SET abstract_summary = :summary WHERE paper_id = :paper_id"),
@@ -141,6 +190,7 @@ class PostgresIngestRepository:
             )
 
     def save_paragraphs(self, paper_id: int, paragraphs: Sequence[ParagraphRecord]) -> list[int]:
+        """STEP 7: 단락들을 paragraphs 테이블에 한 트랜잭션으로 순서대로 INSERT한다."""
         statement = text(
             """
             INSERT INTO paragraphs (
@@ -180,6 +230,18 @@ class PostgresIngestRepository:
         display: str,
         embedding: list[float] | None = None,
     ) -> int:
+        """STEP 6: 정규화 키워드를 upsert하고 필요하면 동의어(alias)로 기존 키워드에 병합한다.
+
+        판정 순서(모두 한 트랜잭션 안에서 수행):
+        ① 정규화 키워드(keywords.keyword) 또는 이미 등록된 별칭(keyword_aliases.alias)과
+           정확히 같은 값이 있으면 그 키워드의 frequency만 +1 하고 재사용한다(정확 매칭).
+        ② 정확히 같은 값이 없으면 임베딩 코사인 유사도가 가장 높은 기존 키워드를 찾고,
+           그 유사도가 `Settings.keyword_alias_similarity_threshold`(설계상 0.95,
+           DESIGN.md §3 STEP 6) 이상이면 표기만 다른 동의어로 보고 keyword_aliases에
+           등록한 뒤 그 키워드의 frequency를 +1 한다 — 완전히 새 키워드로 중복
+           생성하지 않기 위한 근접 매칭 병합이다.
+        ③ 그마저도 없으면 완전히 새로운 keywords 행을 생성한다.
+        """
         vector_literal = _vector_literal(embedding)
         with self.engine.begin() as connection:
             existing = connection.execute(
@@ -223,6 +285,8 @@ class PostgresIngestRepository:
                     ),
                     {"embedding": vector_literal},
                 ).mappings().first()
+            # 코사인 유사도가 임계값(기본 0.95) 이상인 기존 키워드가 있으면 완전히
+            # 새 키워드를 만들지 않고 그 키워드의 동의어(alias)로 등록한다.
             if nearest is not None and float(nearest["similarity"]) >= (
                 self.settings.keyword_alias_similarity_threshold
             ):
@@ -260,6 +324,10 @@ class PostgresIngestRepository:
         return int(keyword_id)
 
     def link_paper_keyword(self, paper_id: int, keyword_id: int, score: float) -> None:
+        """STEP 6: paper_keywords에 (논문, 키워드, keywords.KeywordScore 점수)를 upsert한다.
+
+        같은 논문-키워드 조합이 이미 있으면(재처리 등) score만 최신값으로 갱신한다.
+        """
         with self.engine.begin() as connection:
             connection.execute(
                 text(
@@ -280,6 +348,7 @@ class PostgresIngestRepository:
         summary: str,
         embedding: list[float] | None = None,
     ) -> int:
+        """STEP 7: 표 원문+요약+임베딩을 paper_tables에 저장한다."""
         statement = text(
             """
             INSERT INTO paper_tables (
@@ -305,6 +374,7 @@ class PostgresIngestRepository:
         return int(table_id)
 
     def save_relations(self, paper_id: int, relations: Sequence[tuple[int, float, str]]) -> None:
+        """STEP 8: relations.build_relations가 계산한 (연관 논문, 점수, 사유) 목록을 paper_relations에 upsert한다."""
         statement = text(
             """
             INSERT INTO paper_relations (
@@ -336,6 +406,13 @@ class PostgresIngestRepository:
         status: str,
         error: str | None = None,
     ) -> None:
+        """모든 STEP 실행 전후로 processing_jobs에 상태 로그 행을 남긴다(running/done/failed).
+
+        paper_id는 STAGE_1(source check)처럼 아직 papers 행이 없는 시점에는 None일
+        수 있다. started_at/finished_at은 status에 따라 하나만 채워, 단계별 소요
+        시간과 실패 stage를 나중에 SQL로 조회할 수 있게 한다
+        (docs/guide/04-ingest-pipeline.md 5단계).
+        """
         now = datetime.now(UTC)
         with self.engine.begin() as connection:
             connection.execute(
@@ -360,6 +437,11 @@ class PostgresIngestRepository:
             )
 
     def list_relation_candidates(self, paper_id: int) -> list[dict[str, Any]]:
+        """STEP 8: 신규 논문(paper_id)을 제외한, 임베딩이 이미 있는 모든 논문을 연관도 계산 후보로 가져온다.
+
+        논문별 키워드는 paper_keywords/keywords를 조인·집계(array_agg)해 한 번에
+        가져와 relations.build_relations가 자카드 유사도를 계산할 수 있게 한다.
+        """
         statement = text(
             """
             SELECT

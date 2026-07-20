@@ -1,3 +1,17 @@
+"""검색 서비스가 사용하는 데이터 접근 계층: pgvector 코사인 유사도 쿼리 + RDB 조인.
+
+`SearchRepository` Protocol이 SearchService가 필요로 하는 조회/저장 연산의 계약을
+정의하고, `PostgresSearchRepository`가 SQLAlchemy + pgvector로 실제 구현을 제공한다.
+`InMemorySearchRepository`는 같은 계약을 순수 파이썬 자료구조로 흉내 낸 테스트용
+구현으로, 외부 DB 없이 검색 로직을 오프라인으로 검증할 수 있게 한다(CLAUDE.md 코드
+규칙 — 외부 서비스는 페이크로 대체).
+
+pgvector 벡터 컬럼(keywords.embedding, paragraphs.embedding)에는 HNSW
+(vector_cosine_ops) 인덱스가 걸려 있어(DESIGN.md §4), `embedding <=> :vector`
+연산자로 코사인 거리 기반 최근접 검색을 인덱스 스캔으로 빠르게 수행한다.
+`1 - 거리`로 변환해 코사인 유사도(0~1에 가까울수록 유사)로 사용한다.
+"""
+
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -14,6 +28,8 @@ from paperrag.search.schemas import KeywordCandidate
 
 @dataclass(frozen=True)
 class KeywordRow:
+    """keywords 테이블 1행. keyword는 정규화형(정확 매칭 대조용), display_form은 화면 표시용 원형 표기."""
+
     keyword_id: int
     keyword: str
     display_form: str
@@ -23,12 +39,16 @@ class KeywordRow:
 
 @dataclass(frozen=True)
 class PaperKeywordRow:
+    """paper_keywords 테이블 1행. kw_score는 대표 논문 점수식의 0.5 가중치 항에 그대로 쓰인다."""
+
     paper_id: int
     kw_score: float
 
 
 @dataclass(frozen=True)
 class PaperMetaRow:
+    """papers 테이블 1행에서 검색 응답에 필요한 필드만 뽑은 메타데이터."""
+
     paper_id: int
     title: str
     authors: str = ""
@@ -41,6 +61,8 @@ class PaperMetaRow:
 
 @dataclass(frozen=True)
 class ParagraphRow:
+    """paragraphs 테이블 1행. is_topic_relevant=false인 단락은 조회 단계에서 이미 제외된 상태로 들어온다."""
+
     paragraph_id: int
     paper_id: int
     paragraph_order: int
@@ -53,6 +75,8 @@ class ParagraphRow:
 
 @dataclass(frozen=True)
 class TableRow:
+    """tables(코드상 실제 테이블명은 paper_tables) 1행."""
+
     table_id: int
     paper_id: int
     table_title: str | None
@@ -61,11 +85,17 @@ class TableRow:
 
 
 class SearchRepository(Protocol):
+    """SearchService가 필요로 하는 데이터 접근 연산의 계약.
+
+    PostgresSearchRepository(운영)와 InMemorySearchRepository(테스트)가 각각
+    이 Protocol을 구현해, service.py는 어떤 저장소를 쓰는지 몰라도 되게 한다.
+    """
+
     def keyword_by_id(self, keyword_id: int) -> KeywordRow | None:
-        """Return one keyword row by id."""
+        """resolve() 단계: 확정된 keyword_id의 표시 이름/정규화형/임베딩을 조회한다."""
 
     def find_keyword_exact(self, normalized: str) -> KeywordRow | None:
-        """Find keyword by normalized keyword or alias."""
+        """정확 매칭 단계: 정규화된 질의 키워드가 keywords.keyword 또는 keyword_aliases.alias와 일치하는지 찾는다."""
 
     def similar_keywords(
         self,
@@ -73,31 +103,31 @@ class SearchRepository(Protocol):
         top_k: int = 3,
         min_sim: float = 0.6,
     ) -> list[KeywordCandidate]:
-        """Return vector-nearest keywords."""
+        """유사 키워드 제안 단계: 질의 임베딩과 코사인 유사도가 가장 높은 키워드 top_k개를 min_sim 이상만 반환한다."""
 
     def papers_for_keyword(self, keyword_id: int) -> list[PaperKeywordRow]:
-        """Return papers linked to a keyword."""
+        """대표 논문 선정 단계: 확정된 키워드에 연결된 후보 논문과 각각의 paper_keywords.score를 반환한다."""
 
     def best_paragraph_similarity(self, paper_id: int, vec: Sequence[float]) -> float:
-        """Return the best relevant paragraph similarity for a paper."""
+        """대표 논문 점수식의 0.3 가중치 항: 논문 내 topic-relevant 단락 중 질의 임베딩과 가장 유사한 값을 반환한다."""
 
     def paper_meta(self, paper_id: int) -> PaperMetaRow | None:
-        """Return paper metadata."""
+        """대표/연관 논문 각각의 표시용 메타데이터(제목/저자/연도 등)를 조회한다."""
 
     def paper_keywords(self, paper_id: int) -> list[str]:
-        """Return display keywords for a paper."""
+        """엑셀/응답에 노출할 논문의 대표 키워드 표시 이름 목록을 score 내림차순으로 반환한다."""
 
     def title_abstract_contains(self, paper_id: int, keyword: str) -> bool:
-        """Return whether title or abstract contains the keyword."""
+        """대표 논문 점수식의 0.1 가중치 항: 매칭 키워드가 논문 제목·초록에 직접 등장하는지 확인한다."""
 
     def top_relation(self, paper_id: int) -> tuple[int, float, str] | None:
-        """Return the top precomputed related paper."""
+        """연관 논문 선정 단계: 실시간 계산 없이, 미리 계산된 paper_relations에서 최고 score 1건을 조회한다."""
 
     def paragraphs_of(self, paper_id: int) -> list[ParagraphRow]:
-        """Return topic-relevant paragraphs ordered by paragraph order."""
+        """엑셀 단락/섹션 시트용: is_topic_relevant=true인 단락만 paragraph_order 순으로 반환한다."""
 
     def tables_of(self, paper_id: int) -> list[TableRow]:
-        """Return paper tables."""
+        """엑셀 표 시트용: 논문에 속한 표 전체를 반환한다."""
 
     def save_result(
         self,
@@ -110,13 +140,19 @@ class SearchRepository(Protocol):
         related_paper_id: int | None,
         excel_path: str,
     ) -> None:
-        """Persist a generated search result."""
+        """엑셀 생성 완료 후, GET /result/{id}/excel에서 재사용할 수 있도록 result_id와 엑셀 경로를 캐시한다."""
 
     def load_result(self, result_id: str) -> str | None:
-        """Return a cached Excel path."""
+        """result_id로 캐시된 엑셀 파일 경로를 조회한다. 없으면 None(다운로드 404 처리로 이어짐)."""
 
 
 class PostgresSearchRepository:
+    """SearchRepository의 운영 구현. SQLAlchemy Engine으로 PostgreSQL 16 + pgvector에 접속한다.
+
+    각 메서드는 매 호출마다 `engine.begin()`으로 짧은 트랜잭션을 열어 조회만 하고
+    커밋한다(검색은 읽기 전용이지만 save_result만 실제로 쓰기를 수행한다).
+    """
+
     def __init__(self, settings: Settings | None = None, engine: Engine | None = None) -> None:
         self.engine = engine or get_engine(settings)
 
@@ -133,6 +169,11 @@ class PostgresSearchRepository:
         return _keyword_from_mapping(row) if row is not None else None
 
     def find_keyword_exact(self, normalized: str) -> KeywordRow | None:
+        # 정확 매칭 쿼리: keyword(정규화형) 또는 keyword_aliases.alias(동의어/영한 별칭)
+        # 중 하나라도 일치하면 매칭으로 인정한다. 정규화형 직접 일치(CASE ... THEN 0)를
+        # 별칭 일치보다 우선 정렬해 더 신뢰도 높은 매칭을 선택한다. paper_keywords에
+        # 연결이 없는 키워드(어떤 논문에도 대표 키워드로 쓰이지 않는 키워드)는
+        # 대표 논문을 고를 수 없으므로 EXISTS 서브쿼리로 제외한다.
         statement = text(
             """
             SELECT
@@ -161,6 +202,10 @@ class PostgresSearchRepository:
         top_k: int = 3,
         min_sim: float = 0.6,
     ) -> list[KeywordCandidate]:
+        # 유사 키워드 제안 쿼리: keywords.embedding에 걸린 HNSW(vector_cosine_ops)
+        # 인덱스를 `<=>`(코사인 거리) 연산자로 스캔해 top_k개를 뽑는다. `1 - 거리`로
+        # 코사인 유사도(0~1)를 만들고, min_sim(하한 0.5 기본) 미만은 SQL이 아니라
+        # 애플리케이션 단에서 걸러낸다(LIMIT은 인덱스 정렬 순서를 그대로 살리기 위함).
         if not vec:
             return []
         statement = text(
@@ -210,6 +255,9 @@ class PostgresSearchRepository:
         ]
 
     def best_paragraph_similarity(self, paper_id: int, vec: Sequence[float]) -> float:
+        # 대표 논문 점수식의 단락 유사도 항: 한 논문으로 범위를 좁힌 뒤(paper_id 필터)
+        # is_topic_relevant=true인 단락 중 질의 임베딩과 코사인 거리가 가장 가까운
+        # 1건만 뽑는다(그 논문에서 질의와 가장 관련 깊은 대목을 찾는 것이 목적).
         if not vec:
             return 0.0
         statement = text(
@@ -273,6 +321,11 @@ class PostgresSearchRepository:
         return bool(needle and needle in haystack)
 
     def top_relation(self, paper_id: int) -> tuple[int, float, str] | None:
+        # 연관 논문 조회: paper_relations는 (source_paper_id, related_paper_id)
+        # 방향으로만 저장되므로, 대표 논문이 source든 related든 상관없이 연관된
+        # 논문을 찾기 위해 양방향을 UNION ALL로 합친다. 여기서는 어떤 값도
+        # 새로 계산하지 않고 미리 저장된 relation_score만 정렬해 최고 1건을 반환한다
+        # (CPU 환경에서도 검색 응답을 빠르게 유지하기 위한 설계 — DESIGN.md §5.2).
         statement = text(
             """
             WITH relation_candidates AS (
@@ -417,6 +470,13 @@ class PostgresSearchRepository:
 
 
 class InMemorySearchRepository:
+    """SearchRepository 계약을 순수 파이썬 dict/list로 재현한 테스트용 구현.
+
+    PostgreSQL/pgvector 없이 검색 서비스를 오프라인으로 검증하기 위한 페이크이며
+    (CLAUDE.md 코드 규칙), 코사인 유사도는 SQL 대신 `_cosine()` 헬퍼로 직접
+    계산해 PostgresSearchRepository와 동일한 순위 결과를 흉내 낸다.
+    """
+
     def __init__(
         self,
         *,
@@ -770,12 +830,14 @@ def _coerce_authors(value: str | Sequence[str] | Any) -> str:
 
 
 def _vector_literal(vector: Sequence[float] | None) -> str | None:
+    """파이썬 float 시퀀스를 pgvector가 이해하는 `[v1,v2,...]` 텍스트 리터럴로 변환한다."""
     if vector is None:
         return None
     return "[" + ",".join(f"{float(value):.9g}" for value in vector) + "]"
 
 
 def _parse_vector(value: Any) -> list[float] | None:
+    """`embedding::text`로 가져온 pgvector 텍스트(`[v1,v2,...]`)를 float 리스트로 되돌린다."""
     if value is None:
         return None
     if isinstance(value, list):
@@ -787,6 +849,7 @@ def _parse_vector(value: Any) -> list[float] | None:
 
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
+    """두 벡터의 코사인 유사도. InMemorySearchRepository가 pgvector의 `1 - (a <=> b)`를 대신 계산하는 데 쓴다."""
     if not a or not b or len(a) != len(b):
         return 0.0
     dot = sum(left * right for left, right in zip(a, b, strict=True))

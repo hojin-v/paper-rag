@@ -1,3 +1,11 @@
+"""검색 API의 요청/응답 및 내부 결과 번들 Pydantic 스키마.
+
+DESIGN.md §5.1의 2단계 인터랙션(POST /search → matched|suggest, POST /search/select,
+GET /result/{result_id}/excel)에서 오가는 데이터 형태를 정의한다. `ResultBundle`은
+API 응답 스키마는 아니지만 service.py가 excel.py에 전달하는 내부 계약으로,
+엑셀 6개 시트를 만드는 데 필요한 모든 정보를 담는다.
+"""
+
 from datetime import datetime
 from typing import Literal
 
@@ -5,16 +13,31 @@ from pydantic import BaseModel, Field
 
 
 class SearchRequest(BaseModel):
+    """POST /search 요청 바디. 사용자가 입력한 자연어 질의 한 줄만 받는다."""
+
     query: str = Field(min_length=1)
 
 
 class KeywordCandidate(BaseModel):
+    """정확 매칭 실패 시 제시하는 유사 키워드 후보 하나.
+
+    similarity는 질의 키워드 임베딩과 keywords.embedding 간 코사인 유사도이며,
+    SearchSuggest.candidates에 최대 search_suggestion_limit개(기본 Top 3)만 담긴다.
+    """
+
     keyword_id: int
     keyword: str
     similarity: float
 
 
 class PaperSummary(BaseModel):
+    """대표/연관 논문 각각에 대한 선정 결과 요약.
+
+    score와 reason은 선정 근거를 그대로 노출하기 위한 필드로, 대표 논문이면
+    가중합 점수식 계산 내역, 연관 논문이면 paper_relations.relation_score와
+    relation_reason(겹치는 키워드 등)이 담긴다.
+    """
+
     paper_id: int
     title: str
     authors: str = ""
@@ -27,6 +50,12 @@ class PaperSummary(BaseModel):
 
 
 class SearchMatched(BaseModel):
+    """POST /search 및 /search/select가 성공(정확 매칭 또는 선택 완료) 시 반환하는 응답.
+
+    match_type으로 "정확 매칭(exact)"인지 "유사 키워드 선택 후 확정(selected)"인지
+    구분하고, result_id는 이후 GET /result/{result_id}/excel 다운로드에 사용한다.
+    """
+
     status: Literal["matched"] = "matched"
     matched_keyword: str
     query_keywords: list[str] = Field(default_factory=list)
@@ -38,6 +67,13 @@ class SearchMatched(BaseModel):
 
 
 class SearchSuggest(BaseModel):
+    """POST /search에서 정확 매칭에 실패했을 때 반환하는 응답.
+
+    session_id는 SuggestionSessionStore가 발급한 TTL 30분짜리 세션 키이며,
+    사용자가 candidates 중 keyword_id 하나를 골라 POST /search/select로 보내면
+    SearchMatched로 이어진다.
+    """
+
     status: Literal["suggest"] = "suggest"
     session_id: str
     query_keywords: list[str] = Field(default_factory=list)
@@ -46,11 +82,19 @@ class SearchSuggest(BaseModel):
 
 
 class SelectRequest(BaseModel):
+    """POST /search/select 요청 바디. suggest 단계의 session_id와 사용자가 고른 keyword_id."""
+
     session_id: str
     keyword_id: int
 
 
 class PaperInfo(BaseModel):
+    """엑셀 "대표/연관 논문 정보" 시트에 들어가는 논문 상세 메타데이터.
+
+    PaperSummary와 달리 검색 선정 점수(score/reason)는 없고 초록 원문·요약 등
+    엑셀 출력에 필요한 전체 필드를 담는다.
+    """
+
     paper_id: int
     title: str
     authors: str = ""
@@ -63,6 +107,8 @@ class PaperInfo(BaseModel):
 
 
 class ParagraphInfo(BaseModel):
+    """엑셀 "대표/연관 논문 단락" 시트의 행 하나. is_topic_relevant=false 단락은 제외된 결과다."""
+
     paragraph_order: int
     section_name: str = ""
     original_text: str = ""
@@ -72,6 +118,12 @@ class ParagraphInfo(BaseModel):
 
 
 class SectionInfo(BaseModel):
+    """엑셀 "대표/연관 논문 섹션" 시트의 행 하나.
+
+    ParagraphInfo들을 section_name 기준으로 등장 순서대로 묶어 만든 집계 단위로,
+    섹션 내 단락들의 원문/정제문/요약을 이어붙이고 키워드는 중복 없이 합친다.
+    """
+
     section_order: int
     section_name: str
     paragraph_count: int
@@ -82,6 +134,8 @@ class SectionInfo(BaseModel):
 
 
 class TableInfo(BaseModel):
+    """엑셀 "표 데이터"/"표 셀" 시트에 쓰이는 표 정보. role로 대표/연관 논문 소속을 구분한다."""
+
     role: Literal["대표", "연관"]
     table_title: str | None = None
     table_text: str = ""
@@ -89,6 +143,13 @@ class TableInfo(BaseModel):
 
 
 class ResultBundle(BaseModel):
+    """검색 1건의 결과를 엑셀로 만드는 데 필요한 모든 데이터를 모은 내부 번들.
+
+    API 응답으로 직접 노출되지 않으며, SearchService.resolve()가 조립해
+    search.excel.build_excel()에 넘긴다. created_at은 엑셀 "검색 결과 요약"
+    시트의 생성 일시 칼럼에 쓰인다.
+    """
+
     result_id: str
     query: str
     query_keywords: list[str] = Field(default_factory=list)

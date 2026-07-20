@@ -16,7 +16,7 @@ data/inbox/*.pdf
 
 | 항목 | 값 | 설명 |
 | --- | --- | --- |
-| 운영 수집 | `pip install -e ".[ingest-full]"` | PaddleOCR, PyMuPDF, Kiwi 계열 |
+| 운영 수집 | `pip install -e ".[ingest-full]"` | PaddleOCR, pypdfium2, Kiwi 계열 |
 | 진단 전용 | `pip install -e ".[ingest]"` | OCR 없는 simple backend 테스트 |
 | 개발 테스트 | `pytest` | 외부 서비스 없이 단위 테스트 실행 |
 
@@ -170,7 +170,7 @@ docker compose exec postgres psql -U paperrag -d paperrag -c "SELECT paper_id, t
 | `--skip-llm` | 사용 | dry-run 또는 명시적 degraded 개발 모드에서만 사용 |
 | `--skip-llm` | 미사용 | Ollama JSON 응답으로 단락 정제·요약·키워드 추출 |
 | `--backend paddle` | 운영 기본 | 모든 PDF에 PP-StructureV3 레이아웃·OCR·표 영역 처리 |
-| `--backend simple` | 진단 전용 | OCR 없이 PyMuPDF 텍스트 블록 확인 |
+| `--backend simple` | 진단 전용 | OCR 없이 pdfplumber 텍스트 줄 확인 |
 | `--backend docling` | 비교 전용 | 모델 비교 및 장애 원인 분석 |
 
 > 주의: 운영 적재에서 `simple`이나 `docling`을 사용하면 전체 OCR 정책을 위반한다.

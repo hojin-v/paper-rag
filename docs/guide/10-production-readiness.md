@@ -5,7 +5,7 @@
 ```text
 preflight
 ├─ 모든 PDF의 Paddle OCR 정책
-├─ PyMuPDF·Paddle 런타임과 로컬 모델 3종
+├─ pypdfium2·Paddle 런타임과 로컬 모델 3종
 ├─ 실제 BGE-M3 임베딩
 ├─ Ollama 지정 모델
 ├─ PostgreSQL

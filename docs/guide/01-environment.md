@@ -30,7 +30,7 @@ cd ~/Projects/paper-rag
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"          # 코어 + pytest/ruff
-pip install -e ".[ingest]"       # PDF 처리(pymupdf) 추가 시
+pip install -e ".[ingest]"       # PDF 처리(pypdfium2 등) 추가 시
 ```
 
 검증:
@@ -77,7 +77,7 @@ cp .env.example .env
 
 | extra | 포함 패키지 | 필요한 시점 |
 | --- | --- | --- |
-| `.[ingest]` | pymupdf | PDF 페이지 렌더링·simple 진단 백엔드 |
+| `.[ingest]` | pypdfium2, pypdf, pdfplumber, pillow | PDF 페이지 렌더링·simple 진단 백엔드 |
 | `.[ingest-full]` | docling, paddleocr, kiwipiepy | 실제 레이아웃 분석·OCR·형태소 정규화 |
 | `.[worker]` | celery[redis] | 대량 배치 병렬화 |
 | `.[ui]` | streamlit | 검색 UI |

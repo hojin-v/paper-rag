@@ -1,9 +1,24 @@
+"""서버사이드에서 HTML+SVG+JS를 문자열로 직접 만드는 검수 뷰어.
+
+이 화면은 관리자·운영자만 쓰는 내부 도구다(일반 검색 사용자는 이 화면을 보지 않는다). 그런
+제한된 용도에 비해 React/Vue 같은 프론트엔드 프레임워크·빌드 파이프라인을 새로 들이는 비용이
+크다고 판단해, FastAPI가 `HTMLResponse`로 바로 내려줄 수 있는 하나의 완성된 HTML 문자열을
+Python에서 f-string으로 조립하는 방식을 택했다. 즉 별도 프론트엔드 의존성·빌드 단계 없이,
+백엔드 배포만으로 뷰어까지 함께 배포된다는 것이 핵심 이유다.
+
+렌더링 흐름: 페이지 이미지 위에 블록 좌표를 SVG `<rect>` 오버레이로 그리고, 블록 데이터
+전체(JSON)를 `<script id="review-data" type="application/json">`에 심어 아래 인라인 JS가
+그 데이터를 읽어 클릭 선택·박스 그리기·리사이즈 같은 상호작용을 처리한다. 서버는 초기 HTML만
+만들고 그 이후 상호작용은 전부 브라우저의 fetch 호출(PUT/POST/DELETE)로 API를 직접 두드린다.
+"""
+
 import html
 import json
 
 from paperrag.ingest.models import BLOCK_TYPES
 from paperrag.review.models import ReviewDocument
 
+# 블록 유형(BlockType) 코드 → 한국어 표시 이름
 BLOCK_LABELS = {
     "title": "제목",
     "author": "저자",
@@ -19,6 +34,7 @@ BLOCK_LABELS = {
     "header_footer": "머리말/꼬리말",
 }
 
+# 블록 유형별 SVG 오버레이/범례 색상
 BLOCK_COLORS = {
     "title": "#c62828",
     "author": "#7b1fa2",
@@ -36,6 +52,15 @@ BLOCK_COLORS = {
 
 
 def build_viewer_html(document: ReviewDocument, *, editable: bool = True) -> str:
+    """검수 문서 하나를 위한 완성된 HTML 페이지 문자열을 생성한다.
+
+    `editable=False`는 운영자용 읽기 전용 자동 처리 품질 모니터, `editable=True`는 관리자가
+    좌표·유형·텍스트를 직접 고치는 교정 화면이다. 두 모드가 같은 템플릿을 공유하며 JS 쪽에서
+    `state.editable`/`state.phase` 값으로 어떤 입력을 활성화할지 결정한다(레이아웃 단계에서는
+    좌표·유형·삭제만, OCR 이후 단계에서는 텍스트 교정·검수 상태만 허용).
+    블록 데이터는 `<` 문자를 이스케이프한 JSON으로 `<script type="application/json">`에
+    통째로 심어 브라우저 쪽 스크립트가 별도 API 호출 없이 초기 상태를 즉시 읽게 한다.
+    """
     payload = json.dumps(
         {
             "document_id": document.document_id,
@@ -137,7 +162,12 @@ button.danger{{background:#b42318}}
 </main>
 <script id="review-data" type="application/json">{payload}</script>
 <script>
+// review-data 스크립트 태그에 서버가 심어둔 JSON(state)을 파싱해 프런트엔드 상태로 사용한다.
+// current: 현재 선택된 블록, drawMode/editMode: 박스 그리기·이동/리사이즈 모드 on/off,
+// drawStart/preview: 그리기 중인 미리보기 사각형, editStart: 드래그로 이동/리사이즈 중인 상태.
 const state=JSON.parse(document.getElementById('review-data').textContent); let current=null; let drawMode=false; let editMode=false; let drawStart=null; let preview=null; let editStart=null;
+// 블록 하나를 선택해 오른쪽 편집 패널에 상세 정보를 채운다.
+// 현재 phase(layoutOnly)와 editable(canEdit) 조합에 따라 어떤 입력을 활성화할지 여기서 결정한다.
 function selectBlock(id){{
   current=state.blocks.find(item=>item.block_id===id); if(!current)return;
   document.querySelectorAll('rect').forEach(el=>el.classList.toggle('selected',el.dataset.id===id));
@@ -169,6 +199,8 @@ function selectBlock(id){{
   document.getElementById('message').textContent='';
   renderEditHandles();
 }}
+// 편집 폼 제출 시 PUT /documents/<id>/blocks/<id>로 유형·좌표·검수 상태(및 OCR 이후 단계면
+// 교정 텍스트)를 저장한다.
 async function saveBlock(event){{
   event.preventDefault(); if(!current)return;
   const bbox=['x1','y1','x2','y2'].map(id=>Number(document.getElementById(id).value));
@@ -178,6 +210,7 @@ async function saveBlock(event){{
   if(!response.ok){{document.getElementById('message').textContent='저장 실패';return}}
   Object.assign(current,body); document.getElementById('message').textContent='저장했습니다.';
 }}
+// 선택된 블록을 삭제 확인 후 DELETE API로 지운다. 성공하면 화면을 새로고침해 최신 상태를 반영한다.
 async function deleteCurrentBlock(){{
   if(!current||state.phase!=='layout_review')return;
   const label=state.labels[current.block_type]||current.block_type;
@@ -186,6 +219,7 @@ async function deleteCurrentBlock(){{
   if(!response.ok){{document.getElementById('message').textContent='영역 삭제 실패';return}}
   location.reload();
 }}
+// 누락 영역을 드래그로 새로 그리는 모드를 켜고 끈다. 편집(이동/리사이즈) 모드와는 동시에 켤 수 없다.
 function toggleDrawMode(){{
   if(state.phase!=='layout_review')return;
   if(editMode)toggleEditMode();
@@ -194,6 +228,7 @@ function toggleDrawMode(){{
   document.getElementById('draw-toggle').textContent=drawMode?'박스 그리기 취소':'페이지에서 박스 그리기 시작';
   document.getElementById('draw-message').textContent=drawMode?'페이지의 누락 영역을 드래그하세요.':'';
 }}
+// 기존 박스를 드래그로 이동하거나 모서리 점으로 크기를 바꾸는 편집 모드를 켜고 끈다.
 function toggleEditMode(){{
   if(state.phase!=='layout_review')return;
   if(drawMode)toggleDrawMode();
@@ -203,7 +238,9 @@ function toggleEditMode(){{
   document.getElementById('draw-message').textContent=editMode?'박스를 드래그해 이동하거나 모서리 점을 드래그해 크기를 바꾼 뒤 저장하세요.':'';
   renderEditHandles();
 }}
+// 편집 모드에서 표시하던 네 모서리 리사이즈 핸들(원)을 전부 제거한다.
 function clearEditHandles(){{document.querySelectorAll('.resize-handle').forEach(handle=>handle.remove())}}
+// 현재 선택된 블록의 사각형 네 모서리에 리사이즈 핸들을 다시 그린다(좌표가 바뀔 때마다 다시 호출됨).
 function renderEditHandles(){{
   clearEditHandles(); if(!editMode||!current)return;
   const rect=document.querySelector(`rect[data-id="${{current.block_id}}"]`); if(!rect)return; const svg=rect.ownerSVGElement;
@@ -212,11 +249,16 @@ function renderEditHandles(){{
     const handle=document.createElementNS('http://www.w3.org/2000/svg','circle'); handle.setAttribute('class','resize-handle'); handle.dataset.corner=corner; handle.dataset.id=current.block_id; handle.setAttribute('cx',cx); handle.setAttribute('cy',cy); handle.setAttribute('r','5'); svg.appendChild(handle);
   }}
 }}
+// 브라우저 포인터 이벤트의 화면 좌표를 SVG viewBox 좌표계(=PDF 좌표계)로 변환한다.
 function svgPoint(svg,event){{
   const point=svg.createSVGPoint(); point.x=event.clientX; point.y=event.clientY;
   return point.matrixTransform(svg.getScreenCTM().inverse());
 }}
+// 각 페이지의 SVG 오버레이에 포인터(마우스/터치) 이벤트를 붙여 두 가지 상호작용을 처리한다.
+// 1) editMode: 선택된 박스를 드래그로 이동하거나 모서리 핸들로 리사이즈
+// 2) drawMode: 빈 영역을 드래그해 새 박스(누락 영역)를 미리 그리기
 document.querySelectorAll('.overlay').forEach(svg=>{{
+  // 드래그 시작: 편집 모드면 이동/리사이즈 시작점을 기록하고, 그리기 모드면 미리보기 사각형을 만든다.
   svg.addEventListener('pointerdown',event=>{{
     const target=event.target; const tag=target.tagName.toLowerCase();
     if(editMode&&(tag==='rect'||target.classList.contains('resize-handle'))){{
@@ -227,6 +269,8 @@ document.querySelectorAll('.overlay').forEach(svg=>{{
     event.preventDefault(); drawStart=svgPoint(svg,event); preview=document.createElementNS('http://www.w3.org/2000/svg','rect');
     preview.setAttribute('class','draw-preview'); preview.setAttribute('x',drawStart.x); preview.setAttribute('y',drawStart.y); preview.setAttribute('width','0'); preview.setAttribute('height','0'); svg.appendChild(preview); svg.setPointerCapture(event.pointerId);
   }});
+  // 드래그 중: 편집 모드면 사각형 좌표를 실시간으로 갱신(코너별 리사이즈 규칙 포함, 페이지 밖으로 못 나가게 clamp),
+  // 그리기 모드면 미리보기 사각형 크기만 갱신한다.
   svg.addEventListener('pointermove',event=>{{
     if(editStart){{
       const point=svgPoint(svg,event); const dx=point.x-editStart.point.x; const dy=point.y-editStart.point.y; let x1=editStart.x; let y1=editStart.y; let x2=editStart.x+editStart.width; let y2=editStart.y+editStart.height;
@@ -238,6 +282,8 @@ document.querySelectorAll('.overlay').forEach(svg=>{{
     preview.setAttribute('x',Math.min(drawStart.x,point.x)); preview.setAttribute('y',Math.min(drawStart.y,point.y));
     preview.setAttribute('width',Math.abs(point.x-drawStart.x)); preview.setAttribute('height',Math.abs(point.y-drawStart.y));
   }});
+  // 드래그 종료: 편집 모드면 최종 좌표를 폼과 current.bbox에 반영(서버 저장은 아직 안 함, 사용자가
+  // "검수 결과 저장"을 눌러야 반영됨), 그리기 모드면 새 블록 생성 API를 호출한다.
   svg.addEventListener('pointerup',async event=>{{
     if(editStart){{
       const rect=editStart.rect; const bbox=[Number(rect.getAttribute('x')),Number(rect.getAttribute('y')),Number(rect.getAttribute('x'))+Number(rect.getAttribute('width')),Number(rect.getAttribute('y'))+Number(rect.getAttribute('height'))].map(value=>Math.round(value*10)/10); editStart=null; current.bbox=bbox;
@@ -252,6 +298,8 @@ document.querySelectorAll('.overlay').forEach(svg=>{{
     location.reload();
   }});
 }});
+// 화면을 열자마자 오른쪽 패널이 비어 보이지 않도록, OCR 이후 단계면 텍스트가 있는 블록을,
+// 레이아웃 단계면 좌표가 있는 아무 블록이나 하나 골라 초기 선택 상태로 보여준다.
 const initialBlock=state.blocks.find(item=>state.phase!=='layout_review'&&item.ocr_text)||state.blocks.find(item=>item.bbox);
 if(initialBlock)selectBlock(initialBlock.block_id);
 </script>
@@ -259,6 +307,7 @@ if(initialBlock)selectBlock(initialBlock.block_id);
 
 
 def _page_markup(document: ReviewDocument, page_number: int) -> str:
+    """한 페이지의 이미지 위에 그 페이지에 속한 블록들을 SVG rect 오버레이로 얹은 HTML 조각을 만든다."""
     page = next(item for item in document.pages if item.page == page_number)
     rectangles: list[str] = []
     for block in document.blocks:

@@ -232,6 +232,10 @@ class Settings(BaseSettings):
     # 위한 전역 세마포어 크기다. 1이면 완전 직렬(가장 안전), 늘리면 처리량은 늘지만
     # 메모리 여유가 그만큼 있어야 한다.
     heavy_task_max_concurrency: int = 1
+    # heavy_task_slot()이 토큰을 못 얻었을 때 명시적으로 포기하기 전 대기하는 최대 시간(초).
+    # 너무 짧으면 잠깐 몰린 정상 요청까지 거부하고, 너무 길면 사용자가 오래 매달리게
+    # 되므로 실측된 LLM 단일 호출 시간(수십 초)을 감안해 60초를 기본값으로 잡았다.
+    heavy_task_semaphore_wait_seconds: float = 60.0
 
 
 @lru_cache

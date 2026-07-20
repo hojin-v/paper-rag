@@ -39,6 +39,7 @@ from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
+from paperrag.concurrency import heavy_task_slot
 from paperrag.config import Settings, get_settings
 from paperrag.ingest.layout import get_backend
 from paperrag.ingest.layout.dedup import deduplicate_layout_blocks
@@ -530,37 +531,41 @@ class ReviewService:
         분리하면 작업이 끝나는 즉시 프로세스를 종료해 메모리/CPU를 OS에 돌려줄 수 있고, 그
         프로세스가 멈추거나 타임아웃되어도 API 프로세스 자체에는 영향을 주지 않는다.
         `paddle_worker_timeout_seconds` 안에 결과가 오지 않으면 프로세스를 강제 종료하고
-        TimeoutError를 던진다.
+        TimeoutError를 던진다. 프로세스 스폰부터 결과 대기까지 전부
+        `concurrency.heavy_task_slot`로 감싸, LLM 호출과 같은 자원 풀을 공유하는
+        동시 실행 개수 제한을 받는다(2026-07-12 실측: 둘이 동시에 상주하면 swap이
+        가득 참).
         """
-        context = multiprocessing.get_context("spawn")
-        result_queue = context.Queue()
-        process = context.Process(
-            target=_paddle_stage_worker,
-            args=(
-                operation,
-                self.settings.model_dump(mode="python"),
-                pdf_path,
-                [block.model_dump(mode="python") for block in blocks],
-                result_queue,
-            ),
-        )
-        process.start()
-        try:
-            status, payload = result_queue.get(
-                timeout=self.settings.paddle_worker_timeout_seconds
+        with heavy_task_slot(self.settings):
+            context = multiprocessing.get_context("spawn")
+            result_queue = context.Queue()
+            process = context.Process(
+                target=_paddle_stage_worker,
+                args=(
+                    operation,
+                    self.settings.model_dump(mode="python"),
+                    pdf_path,
+                    [block.model_dump(mode="python") for block in blocks],
+                    result_queue,
+                ),
             )
-        except queue.Empty as exc:
-            process.terminate()
+            process.start()
+            try:
+                status, payload = result_queue.get(
+                    timeout=self.settings.paddle_worker_timeout_seconds
+                )
+            except queue.Empty as exc:
+                process.terminate()
+                process.join(10)
+                raise TimeoutError(
+                    f"Paddle {operation} 작업이 제한 시간을 초과했습니다."
+                ) from exc
+            finally:
+                result_queue.close()
             process.join(10)
-            raise TimeoutError(
-                f"Paddle {operation} 작업이 제한 시간을 초과했습니다."
-            ) from exc
-        finally:
-            result_queue.close()
-        process.join(10)
-        if process.is_alive():
-            process.terminate()
-            process.join(10)
+            if process.is_alive():
+                process.terminate()
+                process.join(10)
         if status != "ok":
             raise RuntimeError(str(payload))
         return DocumentLayout.model_validate(payload)

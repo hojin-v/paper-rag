@@ -27,6 +27,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from paperrag.concurrency import heavy_task_slot
 from paperrag.config import Settings, get_settings
 from paperrag.ingest.models import EnrichedParagraph
 
@@ -145,7 +146,9 @@ class OllamaClient:
         timeout은 Settings.llm_timeout_seconds를 사용하며, 이 값을 넘기면 httpx가
         예외를 던져 상위 enrich_paragraph 등의 재시도/폴백 로직으로 넘어간다
         (docs/reports/benchmarks/2026-07-04-llm-cpu.md에서 7B 모델 900초 타임아웃
-        실측 근거).
+        실측 근거). 캐시 미스로 실제 Ollama를 호출하는 구간만
+        `concurrency.heavy_task_slot`로 감싸 동시 실행 개수를 제한한다 — 캐시
+        히트는 자원을 거의 안 쓰므로 세마포어를 거칠 필요가 없다.
         """
         cache_path = self._cache_path(prompt, schema_hint)
         if cache_path is not None and cache_path.is_file():
@@ -167,11 +170,12 @@ class OllamaClient:
                 "num_predict": self.settings.llm_max_output_tokens,
             },
         }
-        response = httpx.post(
-            f"{self.settings.ollama_base_url.rstrip('/')}/api/chat",
-            json=payload,
-            timeout=self.settings.llm_timeout_seconds,
-        )
+        with heavy_task_slot(self.settings):
+            response = httpx.post(
+                f"{self.settings.ollama_base_url.rstrip('/')}/api/chat",
+                json=payload,
+                timeout=self.settings.llm_timeout_seconds,
+            )
         response.raise_for_status()
         data = response.json()
         content = data.get("message", {}).get("content", data)

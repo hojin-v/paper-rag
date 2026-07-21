@@ -72,6 +72,8 @@ def build_viewer_html(document: ReviewDocument, *, editable: bool = True) -> str
         ensure_ascii=False,
     ).replace("<", "\\u003c")
     page_markup = "\n".join(_page_markup(document, page.page) for page in document.pages)
+    show_run_ocr = editable and document.phase == "layout_review"
+    show_ocr_review_actions = editable and document.phase == "ocr_review"
     options = "".join(
         f'<option value="{name}">{html.escape(BLOCK_LABELS.get(name, name))}</option>'
         for name in sorted(BLOCK_TYPES)
@@ -143,6 +145,12 @@ button.danger{{background:#b42318}}
     <div class="legend">{legend}</div>
     <div id="status-summary" class="status-summary"></div>
     <button type="button" id="jump-unreviewed" onclick="jumpToNextUnreviewed()">다음 미검수 영역으로 이동</button>
+    <section id="phase-actions">
+      <button type="button" id="run-ocr-btn" onclick="runOcr()" {"hidden" if not show_run_ocr else ""}>영역별 OCR 실행</button>
+      <button type="button" id="confirm-ocr-btn" onclick="confirmOcr()" {"hidden" if not show_ocr_review_actions else ""}>OCR 검수 완료</button>
+      <button type="button" id="return-layout-btn" class="danger" onclick="returnToLayout()" {"hidden" if not show_ocr_review_actions else ""}>레이아웃부터 다시 수정</button>
+      <div id="phase-message"></div>
+    </section>
     <section id="layout-tools" {"hidden" if document.phase != "layout_review" or not editable else ""}>
       <strong>누락 영역 추가</strong>
       <label for="new-block-type">새 영역 유형</label><select id="new-block-type">{options}</select>
@@ -282,6 +290,51 @@ function jumpToNextUnreviewed(){{
   selectBlock(next.block_id);
   const rectEl=document.querySelector(`rect[data-id="${{next.block_id}}"]`);
   if(rectEl)rectEl.scrollIntoView({{behavior:'smooth',block:'center'}});
+}}
+// task_id를 2초 간격으로 폴링해 Celery 작업이 끝날 때까지 기다린다(review/api.py의
+// GET /jobs/{{task_id}}와 동일한 상태 값: pending/started/success/failure).
+async function pollJob(taskId){{
+  while(true){{
+    const response=await fetch(`/jobs/${{taskId}}`); const body=await response.json();
+    if(body.status==='success')return {{ok:true}};
+    if(body.status==='failure')return {{ok:false,error:body.error}};
+    await new Promise(resolve=>setTimeout(resolve,2000));
+  }}
+}}
+// "영역별 OCR 실행": 페이지 1장짜리라도 몇 분 걸릴 수 있어(docs/guide/10-production-readiness.md
+// 실측) 동기 호출 대신 비동기 큐(run-ocr/async)에 제출하고 폴링한다 — 동기로 하면 리버스
+// 프록시·브라우저 타임아웃에 걸릴 위험이 있다(review/api.py의 submit_reviewed_ocr와 동일한 이유).
+async function runOcr(){{
+  const button=document.getElementById('run-ocr-btn'); button.disabled=true;
+  document.getElementById('phase-message').textContent='영역별 OCR 실행 중입니다... (몇 분 걸릴 수 있습니다)';
+  const submitted=await fetch(`/documents/${{state.document_id}}/run-ocr/async`,{{method:'POST'}});
+  if(!submitted.ok){{document.getElementById('phase-message').textContent='OCR 제출 실패';button.disabled=false;return}}
+  const {{task_id}}=await submitted.json();
+  const result=await pollJob(task_id);
+  if(!result.ok){{document.getElementById('phase-message').textContent=`OCR 실패: ${{result.error}}`;button.disabled=false;return}}
+  location.reload();
+}}
+// "OCR 검수 완료": 미검수 블록이 남아 있으면 서버가 400으로 거부하므로 그 메시지를 그대로 보여준다.
+async function confirmOcr(){{
+  const response=await fetch(`/documents/${{state.document_id}}/confirm-ocr`,{{method:'POST'}});
+  if(!response.ok){{
+    const body=await response.json().catch(()=>({{}}));
+    document.getElementById('phase-message').textContent=body.detail||'OCR 검수 완료 실패';
+    return;
+  }}
+  location.reload();
+}}
+// "레이아웃부터 다시 수정": 현재 OCR 결과(텍스트)를 전부 폐기하고 레이아웃 검수로 되돌리는
+// 되돌릴 수 없는 작업이라 확인창을 거친다.
+async function returnToLayout(){{
+  if(!confirm('OCR 결과를 폐기하고 레이아웃 검수로 되돌리시겠습니까?'))return;
+  const response=await fetch(`/documents/${{state.document_id}}/return-to-layout`,{{method:'POST'}});
+  if(!response.ok){{
+    const body=await response.json().catch(()=>({{}}));
+    document.getElementById('phase-message').textContent=body.detail||'되돌리기 실패';
+    return;
+  }}
+  location.reload();
 }}
 // 선택된 블록을 삭제 확인 후 DELETE API로 지운다. 성공하면 화면을 새로고침해 최신 상태를 반영한다.
 async function deleteCurrentBlock(){{

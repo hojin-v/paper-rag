@@ -78,7 +78,10 @@ class PaperMeta(BaseModel):
     """STEP 3(filter)에서 title/author/abstract 블록으로부터 뽑아낸 논문 메타데이터.
 
     `pipeline.py`의 `_extract_meta`가 이 값을 채우며, `papers` 테이블(DESIGN.md §4)의
-    title/authors/published_year/journal/abstract 컬럼과 대응된다.
+    title/authors/published_year/journal/abstract 컬럼과 대응된다. `author_keywords`는
+    DB 컬럼과 대응되지 않고 STEP 6(`_score_keywords`)에서 저자가 직접 지정한 키워드
+    ("Keywords:"/"CCS Concepts:" 같은 머리말/꼬리말 블록에서 뽑음)를 대표 키워드
+    후보에 강제로 포함시키는 데만 쓰인다.
     """
 
     title: str = ""
@@ -86,6 +89,7 @@ class PaperMeta(BaseModel):
     published_year: int | None = None
     journal: str | None = None
     abstract: str = ""
+    author_keywords: list[str] = Field(default_factory=list)
 
 
 class ParagraphDraft(BaseModel):

@@ -87,7 +87,8 @@ paper_relations(source_paper_id, related_paper_id, relation_score, relation_reas
 processing_jobs(job_id PK, paper_id FK, stage, status, error, started_at, finished_at)
 ```
 
-`paper_keywords.score` (수집 시 산출): `0.4×제목 등장 + 0.3×초록 등장 + 0.3×본문 등장 빈도(정규화)`
+`paper_keywords.score` (수집 시 산출): `0.3×제목 등장 + 0.2×초록 등장 + 0.2×본문 등장 빈도(정규화) + 0.3×저자 지정 키워드`
+("Keywords:"/"CCS Concepts:" 블록에서 추출한 저자 지정 키워드는 LLM이 독립적으로 제안하지 못했어도 후보로 강제 포함, 2026-07-21)
 
 ## 5. 검색 서비스
 

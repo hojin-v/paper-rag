@@ -170,3 +170,31 @@ def test_small_bottom_footnote_is_excluded_without_dropping_body_block() -> None
         "body ending with many business",
         "applications. Continued body paragraph.",
     ]
+
+
+def test_keywords_label_header_footer_is_captured_for_author_keywords() -> None:
+    blocks = [
+        LayoutBlock(page=1, block_type="title", text="Title", order=1),
+        LayoutBlock(
+            page=1,
+            block_type="header_footer",
+            text="Keywords: RAG, document layout, OCR",
+            order=2,
+        ),
+        LayoutBlock(
+            page=1,
+            block_type="header_footer",
+            text="CCS Concepts: Information systems -> Information retrieval",
+            order=3,
+        ),
+        LayoutBlock(page=1, block_type="header_footer", text="Proceedings footer", order=4),
+        LayoutBlock(page=1, block_type="text", text="Body", order=5),
+    ]
+
+    meta, body, _ = split_blocks(blocks)
+
+    assert [block.text for block in meta["author_keywords"]] == [
+        "Keywords: RAG, document layout, OCR",
+        "CCS Concepts: Information systems -> Information retrieval",
+    ]
+    assert [block.text for block in body] == ["Body"]

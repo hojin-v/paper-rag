@@ -27,6 +27,13 @@ ABSTRACT_HEADER_RE = re.compile(r"^\s*(abstract|초록|요약)\b", re.IGNORECASE
 # "Fig. 1", "그림 2"처럼 그림 번호로 시작하는 캡션은 레이아웃 분류가 그림으로
 # 못 잡았더라도 텍스트 패턴으로 걸러낸다.
 FIGURE_CAPTION_RE = re.compile(r"^\s*(fig(?:ure)?\.?|그림)\s*\d+\b", re.IGNORECASE)
+# 저자가 직접 지정한 키워드/CCS 분류 목록의 라벨. 이런 블록은 본문이 아니라
+# header_footer로 분류되지만(실제 연구 서술이 아니므로), 목록 자체는 STEP 6에서
+# 대표 키워드 후보로 강제 포함시키기 위해 별도로 붙잡아 둔다(pipeline._extract_meta 참고).
+AUTHOR_KEYWORDS_LABEL_RE = re.compile(
+    r"^\s*(keywords?|key\s*words?|색인어|주요\s*검색어|ccs\s*concepts?)\s*[:：]",
+    re.IGNORECASE,
+)
 
 
 def split_blocks(
@@ -69,6 +76,13 @@ def split_blocks(
         if block.block_type in EXCLUDED:
             if block.block_type == "reference":
                 after_references = True
+            elif block.block_type == "header_footer" and AUTHOR_KEYWORDS_LABEL_RE.match(
+                block.text.strip()
+            ):
+                # "Keywords:"/"CCS Concepts:" 블록은 본문에서는 여전히 제외하되,
+                # 텍스트만 meta_blocks에 따로 모아 STEP 6에서 대표 키워드 후보로 쓸 수
+                # 있게 한다(pipeline._extract_meta/_extract_author_keywords 참고).
+                meta_blocks.setdefault("author_keywords", []).append(block)
             continue
         if block.block_type == "section_header":
             if ABSTRACT_HEADER_RE.match(block.text.strip()):

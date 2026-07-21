@@ -16,6 +16,7 @@ from paperrag.ingest.pipeline import (
     STAGE_7,
     STAGE_8,
     IngestPipeline,
+    _extract_author_keywords,
     _extract_meta,
 )
 from paperrag.ingest.repository import InMemoryIngestRepository
@@ -160,6 +161,64 @@ def test_extract_meta_keeps_author_names_before_affiliations() -> None:
 
     assert meta.authors == ["Jiapeng Wang", "Lianwen Jin", "Kai Ding"]
     assert meta.abstract == "Paper summary"
+
+
+def test_extract_author_keywords_strips_label_and_splits_items() -> None:
+    blocks = [
+        LayoutBlock(
+            page=1,
+            block_type="header_footer",
+            text="Keywords: RAG, document layout, OCR",
+            order=1,
+        ),
+        LayoutBlock(
+            page=1,
+            block_type="header_footer",
+            text="CCS Concepts: Information systems -> Information retrieval",
+            order=2,
+        ),
+    ]
+
+    assert _extract_author_keywords(blocks) == [
+        "RAG",
+        "document layout",
+        "OCR",
+        "Information systems -> Information retrieval",
+    ]
+
+
+def test_extract_meta_wires_author_keywords_from_meta_blocks() -> None:
+    keyword_block = LayoutBlock(
+        page=1,
+        block_type="header_footer",
+        text="Keywords: RAG, document layout",
+        order=1,
+    )
+
+    meta = _extract_meta(
+        {"title": [], "author": [], "abstract": [], "author_keywords": [keyword_block]},
+        [keyword_block],
+        "paper.pdf",
+    )
+
+    assert meta.author_keywords == ["RAG", "document layout"]
+
+
+def test_score_keywords_includes_author_keywords_even_if_llm_missed_them() -> None:
+    meta = PaperMeta(
+        title="RAG based paper retrieval",
+        abstract="This paper describes a RAG system.",
+        author_keywords=["그래프 신경망", "RAG"],
+    )
+
+    entries, count = IngestPipeline._score_keywords(
+        None, meta, enriched_paragraphs=[], paper_keywords=["RAG"]
+    )
+
+    assert count == 2
+    scores = {display: score for _, display, score in entries}
+    assert scores["그래프 신경망"] == pytest.approx(0.3)
+    assert scores["RAG"] == pytest.approx(0.3 + 0.2 + 0.3)
 
 
 def test_pipeline_compensates_created_paper_after_llm_failure(tmp_path: Path) -> None:

@@ -7,7 +7,9 @@
 (`keyword_aliases`)로 병합한다(그 병합 로직 자체는 `repository.py`에 있다).
 
 `KeywordScore`/`score_keyword`는 `paper_keywords.score`(DESIGN.md §4) 산식
-0.4×제목 등장 + 0.3×초록 등장 + 0.3×본문 등장 빈도(정규화)를 구현한다.
+0.3×제목 등장 + 0.2×초록 등장 + 0.2×본문 등장 빈도(정규화) + 0.3×저자 지정
+("Keywords:"/"CCS Concepts:" 블록에서 추출, `pipeline._extract_author_keywords`
+참고)을 구현한다.
 """
 
 import re
@@ -68,13 +70,17 @@ def _fallback_normalize(text: str) -> str:
 class KeywordScore:
     """`paper_keywords.score` 산식의 가중치 컨테이너(DESIGN.md §4).
 
-    기본값 0.4/0.3/0.3은 "제목에 나오면 가장 중요하고, 초록·본문 등장은
-    비슷한 비중으로 본다"는 설계 결정을 그대로 반영한다.
+    기본값 0.3/0.2/0.2/0.3은 "제목·저자 지정 키워드가 가장 중요하고, 초록·본문
+    등장은 비슷한 비중으로 본다"는 설계 결정을 반영한다. author_weight는 저자가
+    "Keywords:"/"CCS Concepts:"로 직접 명시한 키워드에만 적용되는 가중치로,
+    LLM이 title/abstract만 보고 독립적으로 그 키워드를 제안하지 못했더라도
+    최소한의 점수를 보장해 완전히 묻히지 않게 한다.
     """
 
-    title_weight: float = 0.4
-    abstract_weight: float = 0.3
-    body_weight: float = 0.3
+    title_weight: float = 0.3
+    abstract_weight: float = 0.2
+    body_weight: float = 0.2
+    author_weight: float = 0.3
 
     def compute(
         self,
@@ -84,12 +90,13 @@ class KeywordScore:
         abstract: str,
         body_frequency: int,
         max_body_frequency: int,
+        is_author_keyword: bool = False,
     ) -> float:
         """키워드 하나의 논문 대표성 점수를 계산한다.
 
-        제목/초록 등장은 있다/없다(0 또는 1)만 보고, 본문 등장은 이 논문 내에서
-        가장 많이 등장한 키워드 빈도(max_body_frequency) 대비 상대 빈도로
-        정규화해 단락 수가 많은 논문에 유리해지지 않게 한다.
+        제목/초록 등장과 저자 지정 여부는 있다/없다(0 또는 1)만 보고, 본문 등장은
+        이 논문 내에서 가장 많이 등장한 키워드 빈도(max_body_frequency) 대비 상대
+        빈도로 정규화해 단락 수가 많은 논문에 유리해지지 않게 한다.
         """
         normalized_keyword = normalize(keyword)
         title_hit = 1.0 if normalized_keyword and normalized_keyword in normalize(title) else 0.0
@@ -99,6 +106,7 @@ class KeywordScore:
             self.title_weight * title_hit
             + self.abstract_weight * abstract_hit
             + self.body_weight * body_norm
+            + self.author_weight * (1.0 if is_author_keyword else 0.0)
         )
 
 
@@ -109,6 +117,7 @@ def score_keyword(
     abstract: str,
     body_frequency: int,
     max_body_frequency: int,
+    is_author_keyword: bool = False,
 ) -> float:
     """`KeywordScore`의 기본 가중치로 점수를 계산하는 간단한 함수형 래퍼."""
     return KeywordScore().compute(
@@ -117,4 +126,5 @@ def score_keyword(
         abstract=abstract,
         body_frequency=body_frequency,
         max_body_frequency=max_body_frequency,
+        is_author_keyword=is_author_keyword,
     )

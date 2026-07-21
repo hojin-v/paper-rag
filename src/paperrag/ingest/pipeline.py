@@ -16,7 +16,7 @@ from pathlib import Path
 
 from paperrag.config import Settings, get_settings
 from paperrag.ingest.embeddings import EmbeddingClient
-from paperrag.ingest.filterer import split_blocks
+from paperrag.ingest.filterer import AUTHOR_KEYWORDS_LABEL_RE, split_blocks
 from paperrag.ingest.keywords import KeywordScore, normalize
 from paperrag.ingest.layout.base import LayoutBackend
 from paperrag.ingest.llm_enrich import (
@@ -296,7 +296,10 @@ class IngestPipeline:
         쓰고, 실제로 저장·점수화하는 키워드 표시형(display)은 STEP 5에서 뽑은
         논문 대표 키워드(paper_keywords)를 기준으로 한다 — 2026-07-12 실측에서
         지적된 "모든 단락 키워드를 대표 키워드로 승격하지 않는다"는 정책을 그대로
-        반영한 것이다.
+        반영한 것이다. 다만 저자가 직접 지정한 키워드(meta.author_keywords,
+        "Keywords:"/"CCS Concepts:" 블록에서 뽑음)는 LLM이 title/abstract/요약만
+        보고 독립적으로 제안하지 않았어도 후보로 강제 포함시킨다 — 저자 스스로 고른
+        용어는 그 자체로 신뢰할 만한 신호이기 때문이다(KeywordScore.author_weight).
         """
         body_keywords = [
             keyword
@@ -317,6 +320,12 @@ class IngestPipeline:
             normalized = normalize(keyword)
             if normalized:
                 displays_by_normalized.setdefault(normalized, keyword.strip())
+        author_normalized: set[str] = set()
+        for keyword in meta.author_keywords:
+            normalized = normalize(keyword)
+            if normalized:
+                displays_by_normalized.setdefault(normalized, keyword.strip())
+                author_normalized.add(normalized)
 
         max_body_frequency = max(body_counter.values(), default=0)
         scorer = KeywordScore()
@@ -330,6 +339,7 @@ class IngestPipeline:
                     abstract=meta.abstract,
                     body_frequency=body_counter.get(normalized, 0),
                     max_body_frequency=max_body_frequency,
+                    is_author_keyword=normalized in author_normalized,
                 ),
             )
             for normalized, display in displays_by_normalized.items()
@@ -519,6 +529,7 @@ def _extract_meta(
     abstract = _strip_abstract_heading(
         _join_block_text(meta_blocks.get("abstract", []))
     )
+    author_keywords = _extract_author_keywords(meta_blocks.get("author_keywords", []))
     context = "\n".join(block.text for block in sorted(all_blocks, key=lambda item: item.order)[:20])
     return PaperMeta(
         title=title.strip(),
@@ -526,6 +537,7 @@ def _extract_meta(
         published_year=_extract_year(" ".join([title, abstract, context])),
         journal=None,
         abstract=abstract.strip(),
+        author_keywords=author_keywords,
     )
 
 
@@ -618,6 +630,23 @@ def _order_author_blocks(blocks: Sequence[LayoutBlock]) -> list[LayoutBlock]:
 def _join_block_text(blocks: Sequence[LayoutBlock]) -> str:
     """같은 유형의 블록 여러 개를 order 순서대로 줄바꿈으로 이어붙인다(제목/초록 등)."""
     return "\n".join(block.text.strip() for block in sorted(blocks, key=lambda item: item.order) if block.text.strip())
+
+
+def _extract_author_keywords(blocks: Sequence[LayoutBlock]) -> list[str]:
+    """"Keywords:"/"CCS Concepts:" 라벨이 붙은 머리말/꼬리말 블록에서 저자가 직접
+    지정한 키워드 목록을 뽑는다. 라벨을 떼어낸 뒤 쉼표/세미콜론/가운뎃점(•)/줄바꿈
+    기준으로 나눠 각 항목을 하나의 후보로 본다 — CCS Concepts처럼 계층형 문구
+    ("Information systems → Information retrieval")는 화살표를 포함한 구문 전체를
+    항목 하나로 취급한다(세분화하지 않음).
+    """
+    keywords: list[str] = []
+    for block in sorted(blocks, key=lambda item: item.order):
+        text = AUTHOR_KEYWORDS_LABEL_RE.sub("", block.text.strip(), count=1).strip()
+        for keyword in re.split(r"[,;•\n]+", text):
+            cleaned = keyword.strip(" .")
+            if cleaned:
+                keywords.append(cleaned)
+    return keywords
 
 
 def _split_authors(text: str) -> list[str]:

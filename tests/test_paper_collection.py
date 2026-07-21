@@ -8,7 +8,7 @@ from urllib.parse import parse_qs
 import httpx
 
 from paperrag.collect.openalex import OpenAlexClient, PaperDiscoveryError
-from paperrag.collect.service import PaperCollector
+from paperrag.collect.service import PaperCollector, lookup_source_metadata
 from paperrag.config import Settings
 
 
@@ -176,3 +176,35 @@ def test_get_work_rejects_unknown_or_restrictive_license(tmp_path: Path) -> None
         assert "허용 라이선스" in str(exc)
     else:
         raise AssertionError("제한 라이선스 논문이 수집 후보로 허용됨")
+
+
+def test_lookup_source_metadata_returns_journal_and_link(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    pdf_path = tmp_path / "W123-paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7\n")
+    (tmp_path / "collection-manifest.jsonl").write_text(
+        json.dumps(
+            {
+                "source_id": "W123",
+                "sha256": "abc",
+                "local_path": str(pdf_path),
+                "source_name": "Example Journal",
+                "landing_page_url": "https://papers.example/article",
+                "pdf_url": "https://papers.example/paper.pdf",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    journal, link = lookup_source_metadata(pdf_path, settings)
+
+    assert journal == "Example Journal"
+    # landing_page_url을 우선 사용한다.
+    assert link == "https://papers.example/article"
+
+
+def test_lookup_source_metadata_missing_manifest_returns_none(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+
+    assert lookup_source_metadata(tmp_path / "unknown.pdf", settings) == (None, None)

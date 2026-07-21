@@ -94,8 +94,19 @@ class IngestPipeline:
         self.embedder = embedder
         self.settings = settings or get_settings()
 
-    def run(self, pdf_path: str) -> IngestReport:
+    def run(
+        self,
+        pdf_path: str,
+        *,
+        journal: str | None = None,
+        full_text_link: str | None = None,
+    ) -> IngestReport:
         """PDF 한 편을 STEP 1~8 순서로 처리하고 IngestReport를 반환한다.
+
+        `journal`/`full_text_link`는 PDF 레이아웃에서는 뽑을 수 없는 메타데이터로,
+        수집 경로(worker.ingest_collected_paper)가 collection-manifest.jsonl에서 찾아
+        넘겨준다. 주어지면 STEP 3에서 조립한 PaperMeta에 덮어써 papers 행에 저장한다.
+        단일 업로드 검수 흐름처럼 manifest가 없는 경로에서는 생략되어 None으로 남는다.
 
         내부 `stage()` 헬퍼가 각 단계 실행 전후로 processing_jobs에
         running/done/failed를 기록하고, 실패 시 예외를 다시 던져 파이프라인을
@@ -136,10 +147,23 @@ class IngestPipeline:
             # 이후 실패 시 보상 삭제 대상(nonlocal paper_id)을 특정할 수 있기 때문이다.
             nonlocal paper_id
             filtered_payload, filtered_count = self._filter_blocks(layout.blocks, path)
-            meta_for_save, _, _ = filtered_payload
+            meta_for_save, filtered_body, filtered_tables = filtered_payload
+            # 수집 manifest에서 온 저널명·원문 링크가 있으면 PDF에서 뽑은 메타에 덮어쓴다
+            # (PDF 레이아웃에는 이 두 값을 뽑을 근거가 없어 항상 None이므로 그냥 채운다).
+            if journal is not None or full_text_link is not None:
+                meta_for_save = meta_for_save.model_copy(
+                    update={
+                        "journal": journal if journal is not None else meta_for_save.journal,
+                        "full_text_link": (
+                            full_text_link
+                            if full_text_link is not None
+                            else meta_for_save.full_text_link
+                        ),
+                    }
+                )
             paper_id = self.repo.save_paper(meta_for_save, path)
             report.paper_id = paper_id
-            return filtered_payload, filtered_count
+            return (meta_for_save, filtered_body, filtered_tables), filtered_count
 
         filtered = stage(STAGE_3, filter_and_save)
         meta, body_blocks, table_blocks = filtered
@@ -360,24 +384,20 @@ class IngestPipeline:
     ) -> tuple[tuple[list[float], set[str], list[int]], int]:
         """STEP 7: 단락/키워드/표/논문 텍스트를 임베딩하고 전부 DB에 저장한다.
 
-        임베딩 대상은 DESIGN.md §3 STEP 7 그대로다: 단락은 cleaned_text(원문이
-        아니라 LLM 정제 결과), 키워드는 표시형(display), 표는 제목+요약, 논문은
-        제목+초록+대표 키워드를 이어붙인 텍스트. 논문 임베딩/요약은 STEP 3에서
-        이미 만든 papers 행을 UPDATE(update_paper_embedding/update_paper_enrichment)
-        하고, 단락·키워드·표는 새로 INSERT한다. 반환값의 세 번째 요소(linked_keyword_ids)는
-        이번에 upsert_keyword가 돌려준 keyword_id 목록으로, STEP 9가 "이번 논문이
-        새로 연결된 키워드"만 골라 캐시를 다시 계산하는 데 그대로 쓰인다.
+        임베딩 대상은 단락(cleaned_text, 원문이 아니라 LLM 정제 결과), 키워드(표시형),
+        논문(제목+초록+대표 키워드) 세 가지다. 표는 검색에서 벡터로 조회되지 않고 항상
+        paper_id로만 가져오므로 임베딩을 만들지 않는다(2026-07-21 스키마 감사에서
+        paper_tables.embedding이 계산·저장만 되고 조회되지 않는 것으로 확인되어 제거).
+        논문 임베딩/요약은 STEP 3에서 이미 만든 papers 행을 UPDATE
+        (update_paper_embedding/update_paper_enrichment)하고, 단락·키워드·표는 새로
+        INSERT한다. 반환값의 세 번째 요소(linked_keyword_ids)는 이번에 upsert_keyword가
+        돌려준 keyword_id 목록으로, STEP 9가 "이번 논문이 새로 연결된 키워드"만 골라
+        캐시를 다시 계산하는 데 그대로 쓰인다.
         """
         paragraph_vectors = self.embedder.embed(
             [paragraph.cleaned_text for paragraph in enriched_paragraphs]
         )
         keyword_vectors = self.embedder.embed([display for _, display, _ in keyword_entries])
-        table_vectors = self.embedder.embed(
-            [
-                "\n".join(filter(None, [table.table_title or "", summary]))
-                for table, summary in zip(tables, table_summaries, strict=True)
-            ]
-        )
         paper_text = "\n".join(
             [
                 meta.title,
@@ -424,8 +444,8 @@ class IngestPipeline:
             self.repo.link_paper_keyword(paper_id, keyword_id, score)
             linked_keyword_ids.append(keyword_id)
 
-        for table, summary, vector in zip(tables, table_summaries, table_vectors, strict=True):
-            self.repo.save_table(paper_id, table, summary, vector)
+        for table, summary in zip(tables, table_summaries, strict=True):
+            self.repo.save_table(paper_id, table, summary)
 
         saved_count = len(paragraph_records) + len(keyword_entries) + len(tables) + 1
         return (

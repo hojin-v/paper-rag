@@ -89,6 +89,11 @@ class PaperMeta(BaseModel):
     published_year: int | None = None
     journal: str | None = None
     abstract: str = ""
+    # full_text_link/journal은 PDF 레이아웃에서는 뽑히지 않고, 수집 단계의
+    # collection-manifest.jsonl(OpenAlex 메타데이터)에서 적재 시 주입된다
+    # (collect.manifest.lookup_source_metadata → pipeline.run). 단일 업로드
+    # 검수 흐름처럼 manifest가 없는 경로에서는 None으로 남는다.
+    full_text_link: str | None = None
     author_keywords: list[str] = Field(default_factory=list)
 
 

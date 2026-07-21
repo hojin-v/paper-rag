@@ -104,6 +104,30 @@ def test_pipeline_e2e_with_fake_components(tmp_path: Path) -> None:
     assert len(repo.relations) == 1
     assert repo.relations[0]["related_paper_id"] == candidate_id
 
+
+def test_pipeline_wires_journal_and_full_text_link_into_paper(tmp_path: Path) -> None:
+    repo = InMemoryIngestRepository()
+    pipeline = IngestPipeline(
+        repo,
+        FakeLayoutBackend(),
+        PassthroughEnricher(),
+        FakeEmbeddingClient(),
+        settings=Settings(_env_file=None, paragraph_min_chars=20, paragraph_max_chars=500),
+    )
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-test")
+
+    report = pipeline.run(
+        str(pdf_path),
+        journal="Example Journal",
+        full_text_link="https://papers.example/article",
+    )
+
+    assert report.paper_id is not None
+    # PDF 레이아웃에는 저널명·링크가 없으므로, run()에 넘긴 값이 그대로 papers 행에 채워져야 한다.
+    assert repo.papers[report.paper_id]["journal"] == "Example Journal"
+    assert repo.papers[report.paper_id]["full_text_link"] == "https://papers.example/article"
+
     stages = {row["stage"] for row in repo.job_stages if row["status"] == "done"}
     assert stages == {STAGE_1, STAGE_2, STAGE_3, STAGE_4, STAGE_5, STAGE_6, STAGE_7, STAGE_8}
     assert not [row for row in repo.job_stages if row["status"] == "failed"]

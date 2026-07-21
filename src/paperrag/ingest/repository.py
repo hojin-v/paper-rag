@@ -81,7 +81,6 @@ class IngestRepository(Protocol):
         paper_id: int,
         table: TableDraft,
         summary: str,
-        embedding: list[float] | None = None,
     ) -> int:
         """Persist a table and return table_id."""
 
@@ -118,7 +117,7 @@ class PostgresIngestRepository:
         source_path: str,
         embedding: list[float] | None = None,
     ) -> int:
-        """STEP 3: papers 행을 status='ingested'로 새로 만들고 paper_id를 반환한다.
+        """STEP 3: papers 행을 새로 만들고 paper_id를 반환한다.
 
         이 시점에는 아직 임베딩이 없을 수 있어(embedding=None 허용) 이후 STEP 7의
         `update_paper_embedding`이 같은 행을 UPDATE한다.
@@ -127,11 +126,11 @@ class PostgresIngestRepository:
             """
             INSERT INTO papers (
                 title, authors, published_year, journal, abstract,
-                source_file_path, paper_embedding, status
+                full_text_link, source_file_path, paper_embedding
             )
             VALUES (
                 :title, :authors, :published_year, :journal, :abstract,
-                :source_file_path, CAST(:paper_embedding AS vector), 'ingested'
+                :full_text_link, :source_file_path, CAST(:paper_embedding AS vector)
             )
             RETURNING paper_id
             """
@@ -145,6 +144,7 @@ class PostgresIngestRepository:
                     "published_year": meta.published_year,
                     "journal": meta.journal,
                     "abstract": meta.abstract,
+                    "full_text_link": meta.full_text_link,
                     "source_file_path": source_path,
                     "paper_embedding": _vector_literal(embedding),
                 },
@@ -168,13 +168,13 @@ class PostgresIngestRepository:
             )
 
     def update_paper_embedding(self, paper_id: int, embedding: list[float]) -> None:
-        """STEP 7: papers.paper_embedding을 채우고 status를 다시 'ingested'로 확정한다."""
+        """STEP 7: papers.paper_embedding을 채운다."""
         with self.engine.begin() as connection:
             connection.execute(
                 text(
                     """
                     UPDATE papers
-                    SET paper_embedding = CAST(:paper_embedding AS vector), status = 'ingested'
+                    SET paper_embedding = CAST(:paper_embedding AS vector)
                     WHERE paper_id = :paper_id
                     """
                 ),
@@ -346,16 +346,19 @@ class PostgresIngestRepository:
         paper_id: int,
         table: TableDraft,
         summary: str,
-        embedding: list[float] | None = None,
     ) -> int:
-        """STEP 7: 표 원문+요약+임베딩을 paper_tables에 저장한다."""
+        """STEP 7: 표 원문+요약을 paper_tables에 저장한다.
+
+        표는 검색에서 벡터 유사도로 조회되지 않고 항상 paper_id로만 가져오므로
+        임베딩을 계산·저장하지 않는다(2026-07-21 스키마 감사 후 embedding 컬럼 제거).
+        """
         statement = text(
             """
             INSERT INTO paper_tables (
-                paper_id, table_title, table_text, table_summary, embedding
+                paper_id, table_title, table_text, table_summary
             )
             VALUES (
-                :paper_id, :table_title, :table_text, :table_summary, CAST(:embedding AS vector)
+                :paper_id, :table_title, :table_text, :table_summary
             )
             RETURNING table_id
             """
@@ -368,7 +371,6 @@ class PostgresIngestRepository:
                     "table_title": table.table_title,
                     "table_text": table.table_text,
                     "table_summary": summary,
-                    "embedding": _vector_literal(embedding),
                 },
             ).scalar_one()
         return int(table_id)
@@ -518,9 +520,9 @@ class InMemoryIngestRepository:
             "published_year": meta.published_year,
             "journal": meta.journal,
             "abstract": meta.abstract,
+            "full_text_link": meta.full_text_link,
             "source_file_path": source_path,
             "embedding": embedding,
-            "status": "ingested",
         }
         return paper_id
 
@@ -615,7 +617,6 @@ class InMemoryIngestRepository:
         paper_id: int,
         table: TableDraft,
         summary: str,
-        embedding: list[float] | None = None,
     ) -> int:
         table_id = self._table_id
         self._table_id += 1
@@ -625,7 +626,6 @@ class InMemoryIngestRepository:
             "table_title": table.table_title,
             "table_text": table.table_text,
             "table_summary": summary,
-            "embedding": embedding,
         }
         return table_id
 

@@ -62,12 +62,17 @@ def ingest_collected_paper(source_path: str) -> dict[str, Any]:
     (review.service의 layout_review→ocr_review)과 달리, 이 경로는 사람 개입 없이
     STEP 1~8을 한 번에 끝까지 실행한다.
     """
+    from paperrag.collect.service import lookup_source_metadata
     from paperrag.ingest.embeddings import HttpEmbeddingClient
     from paperrag.ingest.layout import get_backend
     from paperrag.ingest.llm_enrich import OllamaClient
     from paperrag.ingest.pipeline import IngestPipeline
     from paperrag.ingest.repository import PostgresIngestRepository
 
+    # 저널명·원문 링크는 PDF에서 뽑히지 않으므로 수집 manifest(OpenAlex 메타)에서 찾아
+    # papers.journal/full_text_link에 채운다. manifest가 없거나 매칭 실패 시 (None, None)이라
+    # 적재는 그대로 진행된다(best effort).
+    journal, full_text_link = lookup_source_metadata(source_path, settings)
     pipeline = IngestPipeline(
         PostgresIngestRepository(settings),
         get_backend(settings.ingest_backend),
@@ -75,7 +80,7 @@ def ingest_collected_paper(source_path: str) -> dict[str, Any]:
         HttpEmbeddingClient(settings),
         settings=settings,
     )
-    report = pipeline.run(source_path)
+    report = pipeline.run(source_path, journal=journal, full_text_link=full_text_link)
     return report.model_dump(mode="json")
 
 

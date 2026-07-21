@@ -109,7 +109,7 @@ def _load_database_rows(engine: Engine, paper_ids: Sequence[int]) -> dict[str, l
     statements = {
         "papers": """
             SELECT paper_id, title, authors, published_year, journal, abstract,
-                   abstract_summary, source_file_path, status
+                   abstract_summary, source_file_path
             FROM papers WHERE paper_id IN :paper_ids ORDER BY paper_id
         """,
         "paragraphs": """

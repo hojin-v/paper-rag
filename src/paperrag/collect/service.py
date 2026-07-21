@@ -257,6 +257,47 @@ class ManifestStore:
         return records
 
 
+def lookup_source_metadata(
+    source_path: str | Path,
+    settings: Settings | None = None,
+) -> tuple[str | None, str | None]:
+    """적재 대상 PDF의 로컬 경로로 collection-manifest.jsonl에서 (저널명, 원문 링크)를 찾는다.
+
+    적재 파이프라인(worker.ingest_collected_paper)이 papers.journal/full_text_link를 채우기
+    위해 호출한다. 저널명은 manifest의 `source_name`, 원문 링크는 `landing_page_url`
+    (없으면 `pdf_url`)에서 가져온다. manifest가 없거나 이 경로에 해당하는 레코드가 없거나
+    manifest 읽기에 실패하면 `(None, None)`을 반환한다 — 이 값은 부가 메타데이터라
+    없다고 적재를 막지 않는다(best effort). 경로는 절대경로로 정규화해 비교하고, 그래도
+    못 찾으면 파일명으로 한 번 더 매칭한다(작업 디렉터리가 다른 경우 방어).
+    """
+    configured = settings or get_settings()
+    manifest_path = (
+        configured.paper_collection_dir / configured.paper_collection_manifest_name
+    )
+    if not manifest_path.is_file():
+        return None, None
+    try:
+        store = ManifestStore(manifest_path)
+    except PaperDownloadError:
+        return None, None
+    target = Path(source_path).resolve()
+    target_name = Path(source_path).name
+    for record in store.records.values():
+        recorded = record.get("local_path")
+        if not recorded:
+            continue
+        recorded_path = Path(str(recorded))
+        if recorded_path.resolve() == target or recorded_path.name == target_name:
+            journal = str(record.get("source_name") or "").strip() or None
+            link = (
+                str(record.get("landing_page_url") or "").strip()
+                or str(record.get("pdf_url") or "").strip()
+                or None
+            )
+            return journal, link
+    return None, None
+
+
 def _slug(value: str) -> str:
     """논문 제목을 파일명에 안전하게 쓸 수 있는 짧은 슬러그로 변환한다.
 

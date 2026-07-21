@@ -313,16 +313,27 @@ async function pollJob(taskId){{
   }}
 }}
 // "영역별 OCR 실행": 페이지 1장짜리라도 몇 분 걸릴 수 있어(docs/guide/10-production-readiness.md
-// 실측) 동기 호출 대신 비동기 큐(run-ocr/async)에 제출하고 폴링한다 — 동기로 하면 리버스
-// 프록시·브라우저 타임아웃에 걸릴 위험이 있다(review/api.py의 submit_reviewed_ocr와 동일한 이유).
+// 실측) 우선 비동기 큐(run-ocr/async)에 제출하고 폴링한다 — 동기로 하면 리버스 프록시
+// 타임아웃에 걸릴 위험이 있다(review/api.py의 submit_reviewed_ocr와 동일한 이유). 다만 async
+// 엔드포인트가 없는 구버전 서버이거나 worker/브로커 연결이 안 되면 동기 /run-ocr로 폴백한다
+// (브라우저 fetch는 자체 타임아웃이 없어 몇 분 걸려도 기다린다).
 async function runOcr(){{
   const button=document.getElementById('run-ocr-btn'); button.disabled=true;
-  document.getElementById('phase-message').textContent='영역별 OCR 실행 중입니다... (몇 분 걸릴 수 있습니다)';
-  const submitted=await fetch(`/documents/${{state.document_id}}/run-ocr/async`,{{method:'POST'}});
-  if(!submitted.ok){{document.getElementById('phase-message').textContent='OCR 제출 실패';button.disabled=false;return}}
-  const {{task_id}}=await submitted.json();
-  const result=await pollJob(task_id);
-  if(!result.ok){{document.getElementById('phase-message').textContent=`OCR 실패: ${{result.error}}`;button.disabled=false;return}}
+  const msg=document.getElementById('phase-message');
+  msg.textContent='영역별 OCR 실행 중입니다... (몇 분 걸릴 수 있습니다)';
+  try{{
+    const submitted=await fetch(`/documents/${{state.document_id}}/run-ocr/async`,{{method:'POST'}});
+    if(submitted.ok){{
+      const {{task_id}}=await submitted.json();
+      const result=await pollJob(task_id);
+      if(!result.ok){{msg.textContent=`OCR 실패: ${{result.error}}`;button.disabled=false;return}}
+      location.reload(); return;
+    }}
+  }}catch(error){{ /* 아래 동기 폴백으로 진행 */ }}
+  // 비동기 경로가 없거나 실패 → 동기 실행으로 폴백.
+  msg.textContent='동기 OCR 실행 중입니다... (몇 분 걸릴 수 있습니다)';
+  const sync=await fetch(`/documents/${{state.document_id}}/run-ocr`,{{method:'POST'}});
+  if(!sync.ok){{msg.textContent='OCR 실패';button.disabled=false;return}}
   location.reload();
 }}
 // "OCR 검수 완료": 미검수 블록이 남아 있으면 서버가 400으로 거부하므로 그 메시지를 그대로 보여준다.

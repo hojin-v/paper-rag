@@ -236,9 +236,22 @@ async function saveBlock(event){{
   const response=await fetch(`/documents/${{state.document_id}}/blocks/${{current.block_id}}`,{{method:'PUT',headers:{{'content-type':'application/json'}},body:JSON.stringify(body)}});
   if(!response.ok){{document.getElementById('message').textContent='저장 실패';return}}
   Object.assign(current,body);
-  if(body.block_type){{
+  if(body.block_type||body.bbox){{
+    // 드래그로 이동·리사이즈할 때는 포인터 이벤트가 rect의 x/y/width/height를 그 자리에서
+    // 바로 갱신하지만, 좌표 입력창에 직접 값을 넣거나(예: revertToDetected) 타이핑해서
+    // 저장한 경우에는 그 갱신이 한 번도 일어나지 않는다 — 그래서 여기서 저장 성공 후
+    // rect를 body의 최종값으로 다시 그려야, 새로고침 없이도 화면 박스가 실제 저장된
+    // 좌표·유형과 일치한다.
     const rectEl=document.querySelector(`rect[data-id="${{current.block_id}}"]`);
-    if(rectEl)rectEl.setAttribute('class',`block-${{body.block_type}}`);
+    if(rectEl){{
+      if(body.block_type)rectEl.setAttribute('class',`block-${{body.block_type}}`);
+      if(body.bbox){{
+        const [x1,y1,x2,y2]=body.bbox;
+        rectEl.setAttribute('x',x1); rectEl.setAttribute('y',y1);
+        rectEl.setAttribute('width',x2-x1); rectEl.setAttribute('height',y2-y1);
+      }}
+    }}
+    renderEditHandles();
   }}
   document.getElementById('message').textContent='저장했습니다.';
 }}

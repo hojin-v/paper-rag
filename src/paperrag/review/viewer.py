@@ -145,6 +145,7 @@ button.danger{{background:#b42318}}
     <div class="legend">{legend}</div>
     <div id="status-summary" class="status-summary"></div>
     <button type="button" id="jump-unreviewed" onclick="jumpToNextUnreviewed()">다음 미검수 영역으로 이동</button>
+    <button type="button" id="approve-rest-btn" onclick="approveRest()" {"hidden" if not editable else ""}>남은 미검수 전부 승인</button>
     <section id="phase-actions">
       <button type="button" id="run-ocr-btn" onclick="runOcr()" {"hidden" if not show_run_ocr else ""}>영역별 OCR 실행</button>
       <button type="button" id="confirm-ocr-btn" onclick="confirmOcr()" {"hidden" if not show_ocr_review_actions else ""}>OCR 검수 완료</button>
@@ -290,6 +291,16 @@ function jumpToNextUnreviewed(){{
   selectBlock(next.block_id);
   const rectEl=document.querySelector(`rect[data-id="${{next.block_id}}"]`);
   if(rectEl)rectEl.scrollIntoView({{behavior:'smooth',block:'center'}});
+}}
+// "남은 미검수 전부 승인": 미검수 블록을 한 번에 approved로 바꾼다(POST /approve-all).
+// OCR이 충분히 정확해 하나씩 승인할 필요가 없을 때(빠른 스캔 후 일괄 승인) 쓰는 편의 기능이다.
+// 승인은 되돌릴 수 있으므로(각 블록을 다시 미검수/교정으로 바꾸면 됨) 확인창 없이 바로 실행한다.
+async function approveRest(){{
+  const remaining=state.blocks.filter(block=>block.review_status==='unreviewed').length;
+  if(remaining===0){{document.getElementById('message').textContent='미검수 영역이 없습니다.';return}}
+  const response=await fetch(`/documents/${{state.document_id}}/approve-all`,{{method:'POST'}});
+  if(!response.ok){{document.getElementById('message').textContent='일괄 승인 실패';return}}
+  location.reload();
 }}
 // task_id를 2초 간격으로 폴링해 Celery 작업이 끝날 때까지 기다린다(review/api.py의
 // GET /jobs/{{task_id}}와 동일한 상태 값: pending/started/success/failure).

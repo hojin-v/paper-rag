@@ -152,7 +152,9 @@ button.danger{{background:#b42318}}
       <dl class="meta"><dt>페이지</dt><dd id="page"></dd><dt>자동 유형</dt><dd id="detected-type"></dd><dt>자동 좌표</dt><dd id="detected-bbox"></dd><dt>현재 좌표</dt><dd id="bbox"></dd><dt>신뢰도</dt><dd id="confidence"></dd><dt>OCR 엔진</dt><dd id="engine"></dd></dl>
       <div class="edit-only"><div id="phase-help" class="edit-help"></div>
       <label for="block-type">영역 유형</label><select id="block-type">{options}</select>
-      <label>영역 좌표 (x1, y1, x2, y2)</label><div><input id="x1" type="number" step="0.1"><input id="y1" type="number" step="0.1"><input id="x2" type="number" step="0.1"><input id="y2" type="number" step="0.1"></div></div>
+      <label>영역 좌표 (x1, y1, x2, y2)</label><div><input id="x1" type="number" step="any"><input id="y1" type="number" step="any"><input id="x2" type="number" step="any"><input id="y2" type="number" step="any"></div>
+      <button type="button" id="revert-detected" onclick="revertToDetected()">자동 검출값으로 되돌리기</button>
+      </div>
       <label for="ocr-text">모델 OCR 원문</label><textarea id="ocr-text" readonly></textarea>
       <div class="edit-only">
       <label for="corrected-text">검수·교정 텍스트</label><textarea id="corrected-text"></textarea>
@@ -200,9 +202,22 @@ function selectBlock(id){{
   document.getElementById('review-status').disabled=!canEdit;
   document.querySelector('#editor button[type="submit"]').hidden=!canEdit;
   document.getElementById('delete-block').hidden=!layoutOnly||!canEdit;
+  document.getElementById('revert-detected').hidden=!layoutOnly||!canEdit;
   document.getElementById('review-status').value=current.review_status;
   document.getElementById('message').textContent='';
   renderEditHandles();
+}}
+// 현재 선택된 블록의 유형·좌표 입력을 모델이 처음 검출한 값(detected_block_type/detected_bbox)으로
+// 되돌린다. 화면(폼)만 되돌릴 뿐 서버에는 아직 반영하지 않으므로, 이 상태를 실제로 저장하려면
+// "검수 결과 저장"을 눌러야 한다 — 사람이 교정을 시작하기 전 원래 자동 검출값으로 다시 맞춰보고
+// 싶을 때 쓴다(예: 잘못 고친 뒤 원래 상태부터 다시 보고 싶을 때).
+function revertToDetected(){{
+  if(!current)return;
+  const type=current.detected_block_type||current.block_type;
+  const bbox=current.detected_bbox||current.bbox;
+  document.getElementById('block-type').value=type;
+  ['x1','y1','x2','y2'].forEach((id,index)=>document.getElementById(id).value=bbox?bbox[index]:'');
+  document.getElementById('message').textContent='자동 검출값으로 되돌렸습니다. 검수 결과 저장을 눌러야 반영됩니다.';
 }}
 // 편집 폼 제출 시 PUT /documents/<id>/blocks/<id>로 유형·좌표·검수 상태(및 OCR 이후 단계면
 // 교정 텍스트)를 저장한다. 서버(update_block)는 phase가 layout_review가 아닐 때 body에

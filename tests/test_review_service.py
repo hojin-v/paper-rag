@@ -95,7 +95,7 @@ def test_viewer_contains_clickable_overlay_and_ocr_text(tmp_path: Path) -> None:
     assert "자동 좌표" in rendered
     assert '<section id="layout-tools" hidden>' in rendered
     assert document.blocks[0].ocr_text in rendered
-    assert f'class="block-{document.blocks[0].block_type}"' in rendered
+    assert f'class="block-{document.blocks[0].block_type} status-{document.blocks[0].review_status}"' in rendered
     assert '<div class="legend">' in rendered
     assert "const initialBlock=" in rendered
     assert "grid-template-columns:minmax(0,1fr) minmax(300px,360px)" in rendered

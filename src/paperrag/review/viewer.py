@@ -128,6 +128,9 @@ textarea{{min-height:170px;resize:vertical}} .meta{{display:grid;grid-template-c
 button{{margin-top:12px;width:100%;padding:10px;border:0;border-radius:7px;background:var(--accent);color:#fff;font-weight:700;cursor:pointer}}
 button.danger{{background:#b42318}}
 #message{{min-height:22px;margin-top:8px;color:#087f3f}}
+.status-summary{{display:flex;flex-wrap:wrap;gap:8px 14px;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--line);font-size:13px}}
+.status-summary b{{color:var(--ink)}} .status-summary .status-unreviewed-count{{color:#b42318;font-weight:700}}
+.overlay rect.status-unreviewed{{stroke-dasharray:5,4}}
 .read-only .edit-only{{display:none}} .edit-help{{margin:8px 0;padding:8px;background:#fff4d6;border-radius:6px;color:#725000}}
 @media(max-width:720px){{.layout{{display:flex;flex-direction:column}} aside{{order:-1;position:relative;top:auto;max-height:55vh;margin-bottom:16px}}}}
 </style>
@@ -138,6 +141,8 @@ button.danger{{background:#b42318}}
   <section class="pages">{page_markup}</section>
   <aside>
     <div class="legend">{legend}</div>
+    <div id="status-summary" class="status-summary"></div>
+    <button type="button" id="jump-unreviewed" onclick="jumpToNextUnreviewed()">다음 미검수 영역으로 이동</button>
     <section id="layout-tools" {"hidden" if document.phase != "layout_review" or not editable else ""}>
       <strong>누락 영역 추가</strong>
       <label for="new-block-type">새 영역 유형</label><select id="new-block-type">{options}</select>
@@ -236,15 +241,16 @@ async function saveBlock(event){{
   const response=await fetch(`/documents/${{state.document_id}}/blocks/${{current.block_id}}`,{{method:'PUT',headers:{{'content-type':'application/json'}},body:JSON.stringify(body)}});
   if(!response.ok){{document.getElementById('message').textContent='저장 실패';return}}
   Object.assign(current,body);
-  if(body.block_type||body.bbox){{
+  {{
     // 드래그로 이동·리사이즈할 때는 포인터 이벤트가 rect의 x/y/width/height를 그 자리에서
     // 바로 갱신하지만, 좌표 입력창에 직접 값을 넣거나(예: revertToDetected) 타이핑해서
     // 저장한 경우에는 그 갱신이 한 번도 일어나지 않는다 — 그래서 여기서 저장 성공 후
     // rect를 body의 최종값으로 다시 그려야, 새로고침 없이도 화면 박스가 실제 저장된
-    // 좌표·유형과 일치한다.
+    // 좌표·유형과 일치한다. class는 block_type/bbox를 안 바꿔도(예: OCR 단계에서
+    // 검수 상태만 바꾼 경우) status- 부분이 최신 review_status를 반영하도록 항상 다시 쓴다.
     const rectEl=document.querySelector(`rect[data-id="${{current.block_id}}"]`);
     if(rectEl){{
-      if(body.block_type)rectEl.setAttribute('class',`block-${{body.block_type}}`);
+      rectEl.setAttribute('class',`block-${{current.block_type}} status-${{current.review_status}}`);
       if(body.bbox){{
         const [x1,y1,x2,y2]=body.bbox;
         rectEl.setAttribute('x',x1); rectEl.setAttribute('y',y1);
@@ -254,6 +260,28 @@ async function saveBlock(event){{
     renderEditHandles();
   }}
   document.getElementById('message').textContent='저장했습니다.';
+  renderStatusSummary();
+}}
+// 검수 상태(미검수/승인/교정/제외) 개수를 집계해 사이드바에 표시한다. 저장할 때마다
+// 다시 계산해서, 화면을 새로고침하지 않아도 "몇 개나 남았는지"를 바로 확인할 수 있게 한다.
+function renderStatusSummary(){{
+  const counts={{unreviewed:0,approved:0,corrected:0,rejected:0}};
+  for(const block of state.blocks)counts[block.review_status]=(counts[block.review_status]||0)+1;
+  const total=state.blocks.length;
+  document.getElementById('status-summary').innerHTML=
+    `<span class="status-unreviewed-count">미검수 ${{counts.unreviewed}}</span>`+
+    `<span>승인 ${{counts.approved}}</span><span>교정 ${{counts.corrected}}</span>`+
+    `<span>제외 ${{counts.rejected}}</span><span>(총 ${{total}}개)</span>`;
+}}
+// "다음 미검수 영역으로 이동" 버튼: state.blocks에서 미검수 블록을 하나 찾아 선택하고
+// 그 박스가 있는 페이지로 스크롤한다. 여러 페이지짜리 문서에서 미검수 블록을 눈으로
+// 일일이 찾아야 하는 문제(라벨링 중 실제로 겪은 문제)를 해결하기 위한 기능이다.
+function jumpToNextUnreviewed(){{
+  const next=state.blocks.find(block=>block.review_status==='unreviewed');
+  if(!next){{document.getElementById('message').textContent='미검수 영역이 없습니다.';return}}
+  selectBlock(next.block_id);
+  const rectEl=document.querySelector(`rect[data-id="${{next.block_id}}"]`);
+  if(rectEl)rectEl.scrollIntoView({{behavior:'smooth',block:'center'}});
 }}
 // 선택된 블록을 삭제 확인 후 DELETE API로 지운다. 성공하면 화면을 새로고침해 최신 상태를 반영한다.
 async function deleteCurrentBlock(){{
@@ -347,6 +375,7 @@ document.querySelectorAll('.overlay').forEach(svg=>{{
 // 레이아웃 단계면 좌표가 있는 아무 블록이나 하나 골라 초기 선택 상태로 보여준다.
 const initialBlock=state.blocks.find(item=>state.phase!=='layout_review'&&item.ocr_text)||state.blocks.find(item=>item.bbox);
 if(initialBlock)selectBlock(initialBlock.block_id);
+renderStatusSummary();
 </script>
 </body></html>"""
 
@@ -361,7 +390,8 @@ def _page_markup(document: ReviewDocument, page_number: int) -> str:
         x1, y1, x2, y2 = block.bbox
         label = html.escape(BLOCK_LABELS.get(block.block_type, block.block_type))
         rectangles.append(
-            f'<rect class="block-{block.block_type}" data-id="{block.block_id}" x="{x1}" y="{y1}" '
+            f'<rect class="block-{block.block_type} status-{block.review_status}" '
+            f'data-id="{block.block_id}" x="{x1}" y="{y1}" '
             f'width="{x2 - x1}" height="{y2 - y1}" onclick="selectBlock(\'{block.block_id}\')">'
             f"<title>{label}</title></rect>"
         )

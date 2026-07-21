@@ -1,0 +1,37 @@
+name: Deploy
+
+# main에 push되면 자동으로: (1) 클라우드에서 테스트 → (2) 통과 시 온프레미스 맥북의
+# 셀프호스트 러너가 배포. 완전 자동 CD다(사람 개입 없음). 승인 게이트를 원하면 deploy
+# job에 `environment: production`을 추가하고 GitHub 저장소 설정에서 그 environment에
+# required reviewers를 걸면 Continuous Delivery(수동 승인)로 바뀐다 — 문서 15 참고.
+on:
+  push:
+    branches: [main]
+
+# 배포가 겹치지 않도록 직렬화한다(이전 배포가 끝나야 다음이 시작). 진행 중 배포는
+# 취소하지 않는다(중단 시 반쪽 상태가 될 수 있으므로).
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  # 배포 게이트: ci.yml을 그대로 재사용해 클라우드에서 테스트/린트를 돌린다.
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: test
+    # 맥북에 설치한 셀프호스트 러너. 이 라벨을 가진 러너만 이 job을 집어간다.
+    runs-on: [self-hosted, paperrag]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 배포 실행 (빌드·마이그레이션·재기동·헬스체크·롤백)
+        # 러너의 임시 체크아웃이 아니라 정식 프로젝트 경로(.env·data·models가 있는 곳)에서
+        # 배포한다. 배포 스크립트가 그 경로를 이 커밋으로 동기화한 뒤 빌드·기동한다.
+        # SKIP_TESTS=1: 위 test job이 이미 통과시켰으므로 서버에서 재실행하지 않는다.
+        env:
+          PAPERRAG_DEPLOY_DIR: ${{ vars.PAPERRAG_DEPLOY_DIR }}
+          PAPERRAG_DEPLOY_REF: ${{ github.sha }}
+          SKIP_TESTS: "1"
+        run: ./scripts/deploy.sh

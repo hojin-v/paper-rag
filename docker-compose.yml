@@ -2,6 +2,7 @@ services:
   postgres:
     # PostgreSQL 16 with pgvector for relational data and embeddings.
     image: pgvector/pgvector:pg16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: paperrag
       POSTGRES_PASSWORD: paperrag
@@ -9,7 +10,10 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      # 호스트 5433 → 컨테이너 5432. 현재 .env(localhost:5433)와 호스트 도구(psql,
+      # scripts/apply_migrations.py)가 이미 5433을 쓰므로 그대로 맞춘다. 컨테이너 간
+      # 통신은 서비스 이름(postgres:5432)으로 하므로 이 매핑과 무관하다.
+      - "5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U paperrag -d paperrag"]
       interval: 10s
@@ -19,12 +23,14 @@ services:
   redis:
     # Redis broker for Celery ingestion workers.
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
       - "6379:6379"
 
   ollama:
     # Local LLM runtime for Qwen and related on-premises models.
     image: ollama/ollama
+    restart: unless-stopped
     volumes:
       - ollama_models:/root/.ollama
     ports:
@@ -32,7 +38,12 @@ services:
 
   embedder:
     # HTTP embedding server for the production BGE-M3 encoder.
+    # 4개 앱 서비스(embedder/api/worker/ui)는 같은 Dockerfile로 빌드한 단일 이미지를
+    # 공유한다. PAPERRAG_TAG를 배포 스크립트(scripts/deploy.sh)가 git SHA로 지정해
+    # 특정 버전을 띄우고, 롤백 시 이전 SHA로만 바꿔 재기동한다(빌드 없이 즉시 롤백).
     build: .
+    image: paperrag:${PAPERRAG_TAG:-latest}
+    restart: unless-stopped
     command: uvicorn paperrag.embed.server:app --host 0.0.0.0 --port 8100
     ports:
       - "8100:8100"
@@ -44,12 +55,16 @@ services:
   api:
     # FastAPI search service.
     build: .
+    image: paperrag:${PAPERRAG_TAG:-latest}
+    restart: unless-stopped
     command: uvicorn paperrag.search.api:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     volumes:
-      - review_data:/app/data/review
-      - result_data:/app/outputs
+      # 호스트 바인드 마운트 — 검수 PDF·페이지 이미지(PostgresReviewStore의 바이너리
+      # 자산)와 산출물이 호스트에 남아 컨테이너 재생성/재빌드에도 보존되고 백업이 쉽다.
+      - ./data/review:/app/data/review
+      - ./outputs:/app/outputs
       - ./models:/app/models:ro
     depends_on:
       postgres:
@@ -79,6 +94,8 @@ services:
   worker:
     # Celery worker for ingestion and enrichment jobs.
     build: .
+    image: paperrag:${PAPERRAG_TAG:-latest}
+    restart: unless-stopped
     command: celery -A paperrag.worker.app worker
     depends_on:
       postgres:
@@ -90,8 +107,10 @@ services:
       ollama:
         condition: service_started
     volumes:
-      - review_data:/app/data/review
-      - result_data:/app/outputs
+      # 호스트 바인드 마운트 — 검수 PDF·페이지 이미지(PostgresReviewStore의 바이너리
+      # 자산)와 산출물이 호스트에 남아 컨테이너 재생성/재빌드에도 보존되고 백업이 쉽다.
+      - ./data/review:/app/data/review
+      - ./outputs:/app/outputs
       - ./models:/app/models:ro
     env_file:
       - .env
@@ -116,6 +135,8 @@ services:
   ui:
     # Streamlit UI for interactive search and review.
     build: .
+    image: paperrag:${PAPERRAG_TAG:-latest}
+    restart: unless-stopped
     command: streamlit run src/paperrag/ui/app.py --server.address 0.0.0.0 --server.port 8501
     ports:
       - "8501:8501"
@@ -136,5 +157,3 @@ services:
 volumes:
   pgdata:
   ollama_models:
-  review_data:
-  result_data:

@@ -1,4 +1,4 @@
-.PHONY: up app down migrate preflight test lint fmt
+.PHONY: up app down migrate preflight test lint fmt deploy
 
 up:
 	docker compose up -d postgres redis ollama
@@ -23,3 +23,6 @@ lint:
 
 fmt:
 	ruff format
+
+deploy:
+	./scripts/deploy.sh

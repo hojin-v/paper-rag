@@ -19,6 +19,9 @@ outputs/
 *.gguf
 *.onnx
 
+# 배포 상태(서버 로컬 전용 — 현재 배포된 이미지 태그 기록)
+.deploy/
+
 # 편집기/OS
 .vscode/
 .idea/

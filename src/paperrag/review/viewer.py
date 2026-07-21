@@ -77,11 +77,16 @@ def build_viewer_html(document: ReviewDocument, *, editable: bool = True) -> str
         for name in sorted(BLOCK_TYPES)
     )
     present_types = sorted({block.block_type for block in document.blocks})
+    # present_types가 아니라 전체 12개 유형으로 CSS 규칙을 만든다 — 사용자가 블록 유형을
+    # 교정해 이 문서에 아직 없던 유형으로 바뀌어도(예: 유일한 abstract를 author로 고침),
+    # 브라우저 쪽에서 새로고침 없이 rect의 class만 바꿔 즉시 올바른 색을 보여줄 수 있어야
+    # 하기 때문이다(아래 saveBlock() 참고). present_types로만 제한하면 그 유형의 CSS 규칙
+    # 자체가 없어서 색이 기본값으로 보이는 문제가 생긴다.
     block_styles = "".join(
         f".overlay rect.block-{block_type}"
         f"{{fill:{BLOCK_COLORS.get(block_type, '#1769e0')}26;"
         f"stroke:{BLOCK_COLORS.get(block_type, '#1769e0')}}}"
-        for block_type in present_types
+        for block_type in sorted(BLOCK_TYPES)
     )
     legend = "".join(
         f'<span><i style="background:{BLOCK_COLORS.get(block_type, "#1769e0")}"></i>'
@@ -200,15 +205,27 @@ function selectBlock(id){{
   renderEditHandles();
 }}
 // 편집 폼 제출 시 PUT /documents/<id>/blocks/<id>로 유형·좌표·검수 상태(및 OCR 이후 단계면
-// 교정 텍스트)를 저장한다.
+// 교정 텍스트)를 저장한다. 서버(update_block)는 phase가 layout_review가 아닐 때 body에
+// block_type/bbox 키가 "존재하기만 해도"(값이 실제로 바뀌었는지와 무관하게) 좌표·유형을
+// 바꾸려는 시도로 보고 거부한다 — 그래서 layout_review가 아닌 단계에서는 이 두 키를 아예
+// body에 넣지 않아야 한다(넣으면 OCR 텍스트 교정 저장 자체가 매번 실패한다).
 async function saveBlock(event){{
   event.preventDefault(); if(!current)return;
-  const bbox=['x1','y1','x2','y2'].map(id=>Number(document.getElementById(id).value));
-  const body={{block_type:document.getElementById('block-type').value,bbox,review_status:document.getElementById('review-status').value}};
-  if(state.phase!=='layout_review')body.corrected_text=document.getElementById('corrected-text').value;
+  const body={{review_status:document.getElementById('review-status').value}};
+  if(state.phase==='layout_review'){{
+    body.block_type=document.getElementById('block-type').value;
+    body.bbox=['x1','y1','x2','y2'].map(id=>Number(document.getElementById(id).value));
+  }}else{{
+    body.corrected_text=document.getElementById('corrected-text').value;
+  }}
   const response=await fetch(`/documents/${{state.document_id}}/blocks/${{current.block_id}}`,{{method:'PUT',headers:{{'content-type':'application/json'}},body:JSON.stringify(body)}});
   if(!response.ok){{document.getElementById('message').textContent='저장 실패';return}}
-  Object.assign(current,body); document.getElementById('message').textContent='저장했습니다.';
+  Object.assign(current,body);
+  if(body.block_type){{
+    const rectEl=document.querySelector(`rect[data-id="${{current.block_id}}"]`);
+    if(rectEl)rectEl.setAttribute('class',`block-${{body.block_type}}`);
+  }}
+  document.getElementById('message').textContent='저장했습니다.';
 }}
 // 선택된 블록을 삭제 확인 후 DELETE API로 지운다. 성공하면 화면을 새로고침해 최신 상태를 반영한다.
 async function deleteCurrentBlock(){{

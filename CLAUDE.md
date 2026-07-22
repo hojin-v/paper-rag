@@ -15,14 +15,6 @@
   협업 시작 시 `feat/...`, `fix/...` 브랜치 + PR로 전환
 - 커밋 전 확인: 비밀값(.env, 키) 미포함, 생성물(data/, *.xlsx, __pycache__) 미포함
 
-## 작업 방식 (Codex 위임)
-
-- 토큰 소모가 큰 기계적 코드 작성은 `codex exec --full-auto`로 위임하고,
-  Claude는 설계·태스크 스펙 작성·검증·문서화·git 관리를 담당한다
-- 태스크 스펙은 파일로 작성 (정확한 파일 경로·인터페이스·완료 기준 명시) 후
-  `codex exec -C <프로젝트경로> --full-auto - < spec.md` 로 실행 (background)
-- Codex는 git 명령을 실행하지 않는다 — 커밋은 검증(pytest, import 확인) 후 Claude가 수행
-
 ## 문서화 규칙
 
 - 모든 구현 단계는 `docs/guide/NN-주제.md`에 **단계별(N단계) 형식**으로 문서화한다

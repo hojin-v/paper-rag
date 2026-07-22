@@ -13,17 +13,17 @@
                │ ① PDF 업로드                  │ ② 자연어 검색
 ┌──────────────▼──────────────┐  ┌────────────▼────────────────┐
 │   수집 파이프라인 (배치)       │  │   검색 서비스 (FastAPI)       │
-│  1. PDF 검증 + 전 페이지 렌더 │  │  1. 키워드 추출 (LLM)         │
+│  1. PDF 검증 + 전 페이지 렌더 │  │  1. 키워드 추출 (LLM,매검색)  │
 │  2. 전체 레이아웃 분석 + OCR │  │  2. 정확 매칭 (RDB)          │
 │  3. 영역 분류/필터링          │  │  3. 유사 키워드 Top-3        │
 │  4. 단락 분리·표 추출         │  │  4. 대표/연관 논문 선정        │
-│  5. 정제·요약·키워드 (LLM)   │  │  5. 엑셀 생성                │
-│  6~8. 임베딩·연관도 계산      │  │                             │
+│  5. 정제·요약·키워드 (LLM)   │  │  5. 관련도 설명 생성 (LLM)   │
+│  6~8. 임베딩·연관도 계산      │  │  6. 엑셀 생성               │
 └──────┬──────────────────────┘  └──────┬──────────────────────┘
        │                                │
 ┌──────▼────────────────────────────────▼───────────────────────┐
 │              저장 계층 (PostgreSQL 16 + pgvector)               │
-│   정형 테이블 + 벡터 컬럼/HNSW 인덱스 (단락·키워드·표·논문)        │
+│   정형 테이블 + 벡터 컬럼/HNSW 인덱스 (단락·키워드·논문)            │
 └───────────────────────────────────────────────────────────────┘
 ┌───────────────────────────────────────────────────────────────┐
 │  로컬 모델 서빙: Ollama(경량 LLM) · BGE-M3 임베딩(CPU)           │
@@ -60,7 +60,7 @@
 | 4 | paragraph | 섹션 귀속 → 단락 분리. <100자 병합, >1,500자 문장 경계 분할. section_name·paragraph_order 부여 |
 | 5 | llm_enrich | 단락당 LLM 1회 호출로 JSON 생성: `{cleaned_text, summary, keywords[1~3], is_topic_relevant}`. 논문 단위로 대표 키워드 3~5개 + 초록 요약. 표는 table_summary 생성. JSON 스키마 강제 |
 | 6 | keywords | Kiwi 정규화 + 영한 별칭 매핑 → keywords upsert(frequency 증가), 유사도 ≥0.95면 동의어 병합(keyword_aliases) |
-| 7 | embed | 단락(cleaned_text)·키워드·표(title+summary)·논문(제목+초록+키워드) 임베딩 생성·저장 |
+| 7 | embed | 단락(cleaned_text)·키워드·논문(제목+초록+키워드) 임베딩 생성·저장 (표 임베딩은 검색에서 쓰지 않아 제거, 0005) |
 | 8 | relate | 논문 임베딩 기준 상위 20편 → paper_relations. `score = 0.6×논문 임베딩 유사도 + 0.3×키워드 자카드 + 0.1×연도 근접도`, relation_reason에 겹치는 키워드 기록 |
 
 - 단계별 상태를 `processing_jobs`에 기록한다. 현재 CLI의 실패 단계 재개와 중간 레이아웃 체크포인트는
@@ -74,18 +74,24 @@
 ```sql
 papers(paper_id PK, title, authors, published_year, journal, abstract,
        abstract_summary, full_text_link, source_file_path,
-       paper_embedding VECTOR(1024), status, created_at)
+       paper_embedding VECTOR(1024), created_at)   -- status 컬럼은 사용되지 않아 제거(0006)
 
 paragraphs(paragraph_id PK, paper_id FK, section_name, paragraph_order,
-           original_text, cleaned_text, summary, is_topic_relevant, embedding VECTOR(1024))
+           original_text, cleaned_text, summary, is_topic_relevant, keywords TEXT[], embedding VECTOR(1024))
 
 keywords(keyword_id PK, keyword UNIQUE(정규화형), display_form, frequency, embedding VECTOR(1024))
 keyword_aliases(alias PK, keyword_id FK)
 paper_keywords(paper_id, keyword_id, score, PK(paper_id, keyword_id))
-tables(table_id PK, paper_id FK, table_title, table_text, table_summary, embedding VECTOR(1024))
+paper_tables(table_id PK, paper_id FK, table_title, table_text, table_summary)  -- 표 embedding은 검색에서 안 써서 제거(0005)
 paper_relations(source_paper_id, related_paper_id, relation_score, relation_reason, PK(source, related))
 processing_jobs(job_id PK, paper_id FK, stage, status, error, started_at, finished_at)
+search_results(result_id PK, query, match_type, matched_keyword_id, primary_paper_id, related_paper_id, excel_path, created_at)
+keyword_result_cache(keyword_id PK, result_id, excel_path, primary/related paper JSON, created_at)  -- 기본 뷰 결과 캐시(0003)
+review_documents(document_id PK, filename, phase, status, pages/blocks JSON, ...)  -- 검수 상태·블록 저장(0004)
 ```
+
+현재 도메인 테이블은 총 11개다(위 목록 + `schema_migrations` 제외). `search_results`·`keyword_result_cache`·
+`review_documents`는 초기 스키마(0001) 이후 마이그레이션(0003·0004)으로 추가됐다.
 
 `paper_keywords.score` (수집 시 산출): `0.3×제목 등장 + 0.2×초록 등장 + 0.2×본문 등장 빈도(정규화) + 0.3×저자 지정 키워드`
 ("Keywords:"/"CCS Concepts:" 블록에서 추출한 저자 지정 키워드는 LLM이 독립적으로 제안하지 못했어도 후보로 강제 포함, 2026-07-21)
@@ -102,16 +108,30 @@ GET  /result/{result_id}/excel         → xlsx 다운로드
 
 ### 5.2 로직
 
-1. LLM으로 질의 핵심 키워드 추출 → Kiwi 정규화
+1. **질의 핵심 키워드 추출 (매 검색 항상 LLM)** → Kiwi 정규화. 2026-07-22 결정으로 검색마다 항상
+   Ollama LLM(Qwen2.5-7B)이 키워드를 추출한다. Kiwi 형태소 분석·정규식은 LLM 호출/파싱 실패 시에만
+   쓰는 내부 폴백이며 사용자가 고르는 별도 경로가 아니다.
 2. **정확 매칭 우선**: keywords + keyword_aliases 대조. 복수 매칭 시 frequency×질의 등장 순서 가중치 최고 1개 채택
 3. 매칭 실패 시: 질의 키워드 임베딩 ↔ keywords.embedding 코사인 유사도 Top 3 (현재 하한 0.5) → 사용자 선택 대기
 4. **대표 논문**: `0.5×paper_keywords.score + 0.3×단락 최고 유사도 + 0.1×제목/초록 등장 + 0.1×연도 가중치`
 5. **연관 논문**: 사전 계산된 paper_relations에서 최고 score 1편 (실시간 계산 없음 → CPU에서도 수 초 응답)
-6. 엑셀 생성 후 result_id로 캐시
+6. **관련도 설명 생성 (RAG 생성 단계)**: 대표·연관 논문마다 질의와 가장 유사한 단락 1개
+   (`top_matching_paragraph`)를 근거로 "왜 이 논문이 질의와 관련 있는지"를 LLM이 1~2문장 생성한다
+   (`relevance_summary`). 근거 단락에 없는 내용은 생성하지 않도록 프롬프트로 제한하고, LLM 실패 시
+   단락 원문 앞부분으로 폴백한다. 이 근거 제한 생성 단계가 검색을 단순 조회에서 RAG로 만든다.
+7. 엑셀 생성 후 result_id로 캐시. 또한 **기본 뷰(섹션 필터·옵션 없는 요청)는 `keyword_result_cache`에
+   대표/연관 논문·관련도 설명·엑셀 경로를 저장**해, 같은 키워드 재검색 시 LLM·점수·엑셀 재계산을
+   건너뛴다(항상-LLM 비용 완화). 신규 논문 적재 시 그 키워드의 캐시를 강제 갱신한다.
 
-### 5.3 엑셀 출력 (6시트)
+> **비용 주의**: 매 검색이 LLM을 호출하므로(CPU에서 호출당 약 18~20초, Ollama 직렬 처리) 캐시에 없는
+> 신규 질의는 키워드 추출 + 대표/연관 관련도 설명으로 최대 3회 LLM 호출·수십 초가 걸린다.
+> `keyword_result_cache`는 반복 검색만 완화하고 미스(신규 키워드)는 전량 비용을 치른다. 실사용 동시성·
+> 서버 사양 분석은 `docs/reports/assessments/2026-07-22-llm-search-capacity.md` 참조.
 
-① 검색 결과 요약(질의·매칭 키워드·매칭 방식·선정 사유·유사도) ② 대표 논문 정보 ③ 대표 논문 단락(번호·섹션·원문·정제문·요약·키워드) ④ 연관 논문 정보(+연관 점수·사유) ⑤ 연관 논문 단락 ⑥ 표 데이터(구분·제목·내용·요약).
+### 5.3 엑셀 출력 (설계상 6범주, 실제 최대 9시트)
+
+① 검색 결과 요약(질의·매칭 키워드·매칭 방식·선정 사유·유사도·관련도 설명) ② 대표 논문 정보 ③ 대표 논문 단락(번호·섹션·원문·정제문·요약·키워드) ④ 연관 논문 정보(+연관 점수·사유) ⑤ 연관 논문 단락 ⑥ 표 데이터(구분·제목·내용·요약).
+실제 워크북은 위 6범주에 더해 대표/연관 논문의 섹션 요약 시트와 표 셀 시트가 별도로 나뉘어 최대 9시트가 된다(`search/excel.py`).
 열 너비 자동 조정, 헤더 고정, 원문 셀 줄바꿈.
 
 ## 6. 정확도 개선·파인튜닝 계획 (게이트 방식 — "측정 없이 튜닝 없다")

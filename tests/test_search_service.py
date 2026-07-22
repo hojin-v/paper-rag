@@ -13,8 +13,10 @@ from paperrag.search.service import SearchService
 class FakeLLM:
     def __init__(self, responses: list[dict[str, Any]] | None = None) -> None:
         self.responses = list(responses or [])
+        self.prompts: list[str] = []
 
     def generate_json(self, prompt: str, schema_hint: str) -> dict[str, Any]:
+        self.prompts.append(prompt)
         if self.responses:
             return self.responses.pop(0)
         return {"keywords": ["unknown"]}
@@ -201,6 +203,30 @@ def test_search_extracts_keywords_via_llm(tmp_path: Path) -> None:
     assert isinstance(result, SearchMatched)
     assert result.match_type == "exact"
     assert result.primary_paper.paper_id == 10
+
+
+def test_query_keywords_prompt_instructs_llm_not_to_translate(tmp_path: Path) -> None:
+    """실측 재현된 버그: 영어 질의("Structured Document Understanding")를 LLM이
+
+    깨진 한글로 오역해("구조화되ᄂ 문서 이해") 저장된 정확 키워드와 매칭이 실패했다
+    (2026-07-22, 2회 재현). 프롬프트가 원문 언어 유지 지시와 두 언어 few-shot
+    예시를 포함해야 이 회귀를 막을 수 있다.
+    """
+    llm = FakeLLM([{"keywords": ["Structured Document Understanding"]}])
+    service = SearchService(
+        _repo(),
+        llm,
+        StaticEmbeddingClient(),
+        Settings(_env_file=None, result_dir=tmp_path, embed_dim=2),
+    )
+
+    service.extract_keywords("Structured Document Understanding")
+
+    assert len(llm.prompts) == 1
+    prompt = llm.prompts[0]
+    assert "번역하지 마라" in prompt
+    assert "Structured Document Understanding" in prompt
+    assert "Structured Document Understanding" in prompt.split("질의:")[0]
 
 
 def test_include_related_false_skips_relation_lookup_and_response(tmp_path: Path) -> None:

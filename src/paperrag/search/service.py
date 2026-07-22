@@ -133,13 +133,27 @@ from paperrag.search.schemas import (
 from paperrag.search.sessions import SuggestionSessionStore, new_result_id
 
 # LLM(Ollama)에게 질의 키워드 추출을 JSON으로 강제하기 위한 스키마 힌트와 프롬프트.
+#
+# 2026-07-22 실측 발견: "언어를 바꾸지 마라"는 지시 없이 한국어로만 쓰인 프롬프트를 주면,
+# 영어 질의("Structured Document Understanding")조차 LLM이 깨진 한글로 오역해
+# ("구조화되ᄂ 문서 이해" — 자모가 음절로 안 붙는 오류) 저장된 정확 키워드와 매칭이
+# 실패하고 유사 후보로 빠지는 문제가 재현됐다(2회 확인). 원문 언어를 그대로 유지하라는
+# 지시와 few-shot 예시를 추가해 이 오역을 막는다.
 QUERY_KEYWORDS_SCHEMA_HINT = '{"keywords":["string","string","string"]}'
 QUERY_KEYWORDS_PROMPT = """
 너는 한국어/영어 논문 검색 질의에서 핵심 검색 키워드를 추출하는 연구 보조자다.
 사용자의 자연어 질의에서 논문 키워드로 대조할 핵심 명사구 1~5개만 JSON으로 반환하라.
+**절대 번역하지 마라** — 질의에 등장한 단어의 언어(한국어/영어)를 그대로 유지한 채
+키워드를 뽑아라. 영어 질의면 영어 키워드를, 한국어 질의면 한국어 키워드를 반환한다.
 반드시 유효한 JSON만 반환하고, 설명 문장은 쓰지 마라.
 
 반환 형식: {{"keywords":["키워드1","키워드2"]}}
+
+예시 입력: Structured Document Understanding
+예시 출력: {{"keywords":["Structured Document Understanding"]}}
+
+예시 입력: 예지보전 시스템
+예시 출력: {{"keywords":["예지보전 시스템"]}}
 
 질의:
 {query}

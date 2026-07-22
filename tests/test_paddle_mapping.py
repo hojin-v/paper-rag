@@ -274,6 +274,43 @@ def test_table_html_and_crop_coordinates_are_deterministic() -> None:
     )
 
 
+def test_table_colspan_header_keeps_data_columns_aligned() -> None:
+    """실측 재현 버그(2026-07-22, LiLT paper_id=3 표 1): colspan을 읽지 않으면
+
+    2열을 차지하는 헤더 셀 뒤로 모든 데이터 열이 한 칸씩 밀려 값이 엉뚱한 열에
+    쓰였다. colspan만큼 같은 텍스트를 여러 열에 채워 데이터 행과 정렬을 맞춘다.
+    """
+    html = (
+        "<table>"
+        "<tr><td>#</td><td colspan=\"2\">Model Comparison</td></tr>"
+        "<tr><td>1</td><td>CAT</td><td>0.6751</td></tr>"
+        "</table>"
+    )
+    assert _html_table_to_pipe_text(html) == (
+        "# | Model Comparison | Model Comparison\n1 | CAT | 0.6751"
+    )
+
+
+def test_table_rowspan_cell_repeats_across_spanned_rows() -> None:
+    """rowspan=2인 첫 열 셀은 다음 행에서도 같은 값으로 채워져야 나머지 열과 정렬이 맞는다."""
+    html = (
+        "<table>"
+        "<tr><td rowspan=\"2\">Group A</td><td>x</td><td>1</td></tr>"
+        "<tr><td>y</td><td>2</td></tr>"
+        "<tr><td>Group B</td><td>z</td><td>3</td></tr>"
+        "</table>"
+    )
+    assert _html_table_to_pipe_text(html) == (
+        "Group A | x | 1\nGroup A | y | 2\nGroup B | z | 3"
+    )
+
+
+def test_table_literal_pipe_in_cell_is_escaped_to_avoid_column_split() -> None:
+    """셀 값 안의 리터럴 "|"(OCR 오인식 등)가 열 구분자로 오인되지 않도록 치환한다."""
+    html = "<table><tr><td>a|b</td><td>c</td></tr></table>"
+    assert _html_table_to_pipe_text(html) == "a/b | c"
+
+
 def test_region_ocr_configures_cpu_runtime_without_layout_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

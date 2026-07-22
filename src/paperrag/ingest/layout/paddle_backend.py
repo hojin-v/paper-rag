@@ -2083,26 +2083,47 @@ def _scaled_crop_box(
     )
 
 
-class _TableHtmlParser(HTMLParser):
-    """SLANeXt/SLANet_plus가 내놓는 표 구조 HTML(`pred_html`)을 행×셀 텍스트 목록으로 파싱한다.
+def _parse_span(value: str | None) -> int:
+    """colspan/rowspan 속성값을 안전하게 정수로 읽는다. 없거나 잘못된 값이면 1(병합 없음)."""
+    try:
+        parsed = int(value) if value else 1
+    except (TypeError, ValueError):
+        return 1
+    return parsed if parsed >= 1 else 1
 
-    표준 라이브러리 `html.parser.HTMLParser`만으로 최소한의 `<tr>`/`<td>`/`<th>` 구조만
-    다룬다(colspan/rowspan 속성은 읽지 않으므로 병합 셀의 논리적 구조는 복원하지 않고, 셀에
-    있는 텍스트만 위치 순서대로 보존한다 — DESIGN.md §6의 정밀 TEDS 평가 대상이 아니라
-    "표 안 글자를 잃어버리지 않기" 위한 실용적 변환이다).
+
+class _TableHtmlParser(HTMLParser):
+    """SLANeXt/SLANet_plus가 내놓는 표 구조 HTML(`pred_html`)을 행×열 그리드로 파싱한다.
+
+    2026-07-22 수정: 이전에는 colspan/rowspan을 읽지 않고 `<td>` 태그 등장 순서를 그대로
+    한 칸씩 채웠다 — 병합 셀이 있으면 그 뒤 모든 열이 한 칸씩 밀려 실제 값이 엉뚱한
+    열에 쓰이고(예: 헤더가 2열을 차지하는 표에서 값 전체가 한 칸씩 어긋남), 실측
+    적재 논문(LiLT, paper_id=3)의 표 1건에서 실제로 재현됐다(헤더·데이터 여러 행이
+    한 셀에 뒤섞여 저장됨). colspan만큼 같은 텍스트를 여러 열에 채우고, rowspan은
+    `_pending`에 등록해 다음 `<tr>` 시작 시 해당 열을 먼저 채워 넣는 방식으로
+    셀이 차지하는 실제 그리드 위치를 복원한다(TEDS 정밀 평가용은 아니고, "표 안
+    글자가 엉뚱한 열로 밀리지 않게" 하기 위한 실용적 그리드 복원이다).
     """
 
     def __init__(self) -> None:
         super().__init__()
         self.rows: list[list[str]] = []
-        self._row: list[str] | None = None
+        self._row: list[str | None] | None = None
         self._cell: list[str] | None = None
+        self._cell_colspan = 1
+        self._cell_rowspan = 1
+        # rowspan으로 아래 행까지 이어지는 값: 열 인덱스 -> [남은 행 수, 텍스트]
+        self._pending: dict[int, list[Any]] = {}
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "tr":
             self._row = []
+            self._apply_pending_rowspans()
         elif tag in {"td", "th"} and self._row is not None:
             self._cell = []
+            attr_map = dict(attrs)
+            self._cell_colspan = _parse_span(attr_map.get("colspan"))
+            self._cell_rowspan = _parse_span(attr_map.get("rowspan"))
 
     def handle_data(self, data: str) -> None:
         if self._cell is not None:
@@ -2112,21 +2133,52 @@ class _TableHtmlParser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         if tag in {"td", "th"} and self._cell is not None and self._row is not None:
-            self._row.append(" ".join(self._cell).strip())
+            text = " ".join(self._cell).strip()
             self._cell = None
+            col = self._next_free_column()
+            for offset in range(self._cell_colspan):
+                self._set_cell(col + offset, text)
+            if self._cell_rowspan > 1:
+                for offset in range(self._cell_colspan):
+                    self._pending[col + offset] = [self._cell_rowspan - 1, text]
         elif tag == "tr" and self._row is not None:
             if self._row:
-                self.rows.append(self._row)
+                self.rows.append([cell if cell is not None else "" for cell in self._row])
             self._row = None
+
+    def _next_free_column(self) -> int:
+        assert self._row is not None
+        col = 0
+        while col < len(self._row) and self._row[col] is not None:
+            col += 1
+        return col
+
+    def _set_cell(self, col: int, text: str) -> None:
+        assert self._row is not None
+        while len(self._row) <= col:
+            self._row.append(None)
+        self._row[col] = text
+
+    def _apply_pending_rowspans(self) -> None:
+        for col, (_, text) in list(self._pending.items()):
+            self._set_cell(col, text)
+        for col in list(self._pending.keys()):
+            self._pending[col][0] -= 1
+            if self._pending[col][0] <= 0:
+                del self._pending[col]
 
 
 def _html_table_to_pipe_text(html: str) -> str:
-    """표 구조 HTML을 Excel 등 평면 텍스트 출력에 적합한 "|"-구분 텍스트로 변환한다."""
+    """표 구조 HTML을 Excel 등 평면 텍스트 출력에 적합한 "|"-구분 텍스트로 변환한다.
+
+    셀 값 안에 리터럴 "|"가 있으면(OCR 오인식 등) 재파싱(`excel.py::_parse_table_rows`) 시
+    열 구분자와 혼동되므로 "/"로 치환한다.
+    """
     if not html.strip():
         return ""
     parser = _TableHtmlParser()
     parser.feed(html)
-    return "\n".join(" | ".join(row) for row in parser.rows)
+    return "\n".join(" | ".join(cell.replace("|", "/") for cell in row) for row in parser.rows)
 
 
 def _table_structure_quality(table_text: str) -> float:

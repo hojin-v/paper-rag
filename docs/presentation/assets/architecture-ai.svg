@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="520" viewBox="0 0 1920 520" role="img" aria-labelledby="title">
+  <title id="title">AI 아키텍처</title>
+  <defs>
+    <marker id="aArrowSolid" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#33475b"/>
+    </marker>
+    <marker id="aArrowDashed" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#7c8a9a"/>
+    </marker>
+    <style>
+      .title{font:700 26px system-ui,sans-serif;fill:#0f2438}
+      .grouplabel{font:600 13px system-ui,sans-serif;fill:#64748b;text-anchor:middle}
+      .lanelabel{font:700 15px system-ui,sans-serif}
+      .pillText{font:700 12px system-ui,sans-serif;fill:#ffffff;text-anchor:middle}
+      .cardMain{font:600 14px system-ui,sans-serif;fill:#1e293b;text-anchor:middle}
+      .cardCode{font:500 10px ui-monospace,monospace;fill:#64748b;text-anchor:middle}
+      .cardCodeSm{font:500 9px ui-monospace,monospace;fill:#64748b;text-anchor:middle}
+      .noteText{font:500 10px system-ui,sans-serif;fill:#8a95a3;text-anchor:middle}
+      .solid{stroke:#33475b;stroke-width:2.2;fill:none;marker-end:url(#aArrowSolid)}
+      .dashed{stroke:#7c8a9a;stroke-width:2;fill:none;stroke-dasharray:6,5;marker-end:url(#aArrowDashed)}
+    </style>
+  </defs>
+
+  <rect width="1920" height="520" fill="#ffffff"/>
+  <text x="70" y="42" class="title">AI 아키텍처</text>
+
+  <text x="604" y="76" class="grouplabel">논문 처리 파이프라인 (배치)</text>
+  <text x="1581" y="76" class="grouplabel">검색 시점 추론 (실시간)</text>
+
+  <rect x="70" y="92" width="1780" height="190" rx="6" fill="#f1ecfb" stroke="#cdbdf0" stroke-width="1.5"/>
+  <text x="100" y="115" class="lanelabel" fill="#6d3fc4">모델</text>
+
+  <rect x="70" y="302" width="1780" height="190" rx="6" fill="#fff6e8" stroke="#f0dcb0" stroke-width="1.5"/>
+  <text x="100" y="325" class="lanelabel" fill="#b7791f">산출물</text>
+
+  <!-- pills -->
+  <rect x="142" y="82" width="34" height="22" rx="11" fill="#1f3a5f"/><text x="159" y="98" class="pillText">01</text>
+  <rect x="320" y="82" width="34" height="22" rx="11" fill="#1f3a5f"/><text x="337" y="98" class="pillText">02</text>
+  <rect x="497" y="82" width="34" height="22" rx="11" fill="#1f3a5f"/><text x="514" y="98" class="pillText">03</text>
+  <rect x="675" y="82" width="34" height="22" rx="11" fill="#1f3a5f"/><text x="692" y="98" class="pillText">04</text>
+  <rect x="853" y="82" width="34" height="22" rx="11" fill="#1f3a5f"/><text x="870" y="98" class="pillText">05</text>
+  <rect x="1031" y="82" width="34" height="22" rx="11" fill="#1f3a5f"/><text x="1048" y="98" class="pillText">06</text>
+  <rect x="1386" y="82" width="34" height="22" rx="11" fill="#1f3a5f"/><text x="1403" y="98" class="pillText">01</text>
+  <rect x="1564" y="82" width="34" height="22" rx="11" fill="#1f3a5f"/><text x="1581" y="98" class="pillText">02</text>
+  <rect x="1742" y="82" width="34" height="22" rx="11" fill="#1f3a5f"/><text x="1759" y="98" class="pillText">03</text>
+
+  <!-- c1 레이아웃 검출 -->
+  <rect x="84" y="155" width="150" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="159" y="182" class="cardMain">레이아웃 검출</text>
+  <text x="159" y="200" class="cardCode">PP-DocLayout-M</text>
+  <rect x="84" y="365" width="150" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="159" y="392" class="cardMain">블록 좌표·유형</text>
+  <text x="159" y="410" class="cardCode">detected_bbox</text>
+
+  <!-- c2 텍스트 검출 -->
+  <rect x="262" y="155" width="150" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="337" y="182" class="cardMain">텍스트 검출</text>
+  <text x="337" y="200" class="cardCode">PP-OCRv5_mobile_det</text>
+  <rect x="262" y="365" width="150" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="337" y="392" class="cardMain">텍스트 라인 좌표</text>
+  <text x="337" y="410" class="cardCode">레이아웃 보정용</text>
+
+  <!-- c3a 텍스트 인식(본문) -->
+  <rect x="439" y="155" width="150" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="514" y="177" class="cardMain">텍스트 인식(본문)</text>
+  <text x="514" y="194" class="cardCode">korean_PP-OCRv5</text>
+  <text x="514" y="207" class="cardCode">_mobile_rec</text>
+  <rect x="439" y="365" width="150" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="514" y="392" class="cardMain">영역별 원문 텍스트</text>
+  <text x="514" y="410" class="cardCode">ocr_text</text>
+
+  <!-- c3a→c3b: 표 셀 텍스트는 별도 모델이 아니라 텍스트 검출·인식을 그대로 재사용 -->
+  <text x="603" y="148" class="noteText">셀 OCR 재사용</text>
+  <path d="M589,187 L617,187" class="solid"/>
+
+  <!-- c3b 표 구조화 -->
+  <rect x="617" y="155" width="150" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="692" y="177" class="cardMain">표 구조화</text>
+  <text x="692" y="194" class="cardCodeSm">PP-LCNet_x1_0_table_cls →</text>
+  <text x="692" y="206" class="cardCodeSm">SLANeXt_wired/SLANet_plus</text>
+  <rect x="617" y="365" width="150" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="692" y="392" class="cardMain">표 구조 텍스트</text>
+  <text x="692" y="410" class="cardCode">table_html</text>
+
+  <!-- c4 정제·요약·키워드 -->
+  <rect x="795" y="155" width="150" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="870" y="182" class="cardMain">정제·요약·키워드</text>
+  <text x="870" y="200" class="cardCode">Qwen2.5-7B Q4</text>
+  <rect x="795" y="365" width="150" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="870" y="392" class="cardMain">단락 JSON</text>
+  <text x="870" y="410" class="cardCode">cleaned_text/summary</text>
+
+  <!-- c5 임베딩 -->
+  <rect x="973" y="155" width="150" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="1048" y="182" class="cardMain">임베딩 생성</text>
+  <text x="1048" y="200" class="cardCode">BGE-M3</text>
+  <rect x="973" y="365" width="150" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="1048" y="392" class="cardMain">벡터 저장</text>
+  <text x="1048" y="410" class="cardCode">VECTOR(1024)</text>
+
+  <!-- c6 질의 키워드 추출: 매 검색마다 항상 LLM(Qwen). kiwipiepy는 LLM 실패 시의 내부 폴백일 뿐이라 표기하지 않는다(2026-07-22 결정). -->
+  <rect x="1328" y="155" width="150" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="1403" y="182" class="cardMain">질의 키워드 추출</text>
+  <text x="1403" y="200" class="cardCode">Qwen2.5-7B (매 검색)</text>
+  <rect x="1328" y="365" width="150" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="1403" y="392" class="cardMain">정규화 키워드</text>
+  <text x="1403" y="410" class="cardCode">keywords[]</text>
+
+  <!-- c7 벡터 유사도 검색 -->
+  <rect x="1506" y="155" width="150" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="1581" y="182" class="cardMain">벡터 유사도 검색</text>
+  <text x="1581" y="200" class="cardCode">pgvector HNSW</text>
+  <rect x="1506" y="365" width="150" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="1581" y="392" class="cardMain">유사 키워드·단락</text>
+  <text x="1581" y="410" class="cardCode">cosine similarity</text>
+
+  <!-- c8 관련도 설명 생성 (RAG 생성 단계): 대표/연관 논문마다 근거 단락 1개로 "왜 이 논문인지" 설명 생성 -->
+  <rect x="1684" y="155" width="150" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="1759" y="177" class="cardMain">관련도 설명 생성</text>
+  <text x="1759" y="194" class="cardCode">Qwen2.5-7B</text>
+  <text x="1759" y="207" class="cardCodeSm">근거 단락 1개 (RAG)</text>
+  <rect x="1684" y="365" width="150" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="1759" y="392" class="cardMain">관련도 설명</text>
+  <text x="1759" y="410" class="cardCode">relevance_summary</text>
+
+  <!-- ===== 데이터 흐름(실선, 모델→산출물) ===== -->
+  <path d="M159,219 L159,365" class="solid"/>
+  <path d="M337,219 L337,365" class="solid"/>
+  <path d="M514,219 L514,365" class="solid"/>
+  <path d="M692,219 L692,365" class="solid"/>
+  <path d="M870,219 L870,365" class="solid"/>
+  <path d="M1048,219 L1048,365" class="solid"/>
+  <path d="M1403,219 L1403,365" class="solid"/>
+  <path d="M1581,219 L1581,365" class="solid"/>
+  <path d="M1759,219 L1759,365" class="solid"/>
+
+  <!-- ===== 다음 단계 입력 회신(점선, 산출물→다음 모델) ===== -->
+  <path d="M234,397 L262,187" class="dashed"/>
+  <path d="M234,397 L617,187" class="dashed"/>
+  <path d="M412,397 L439,187" class="dashed"/>
+  <path d="M589,397 L795,187" class="dashed"/>
+  <path d="M767,397 L795,187" class="dashed"/>
+  <path d="M945,397 L973,187" class="dashed"/>
+  <path d="M1478,397 L1506,187" class="dashed"/>
+  <path d="M1656,397 L1684,187" class="dashed"/>
+</svg>

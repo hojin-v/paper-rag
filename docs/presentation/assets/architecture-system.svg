@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="600" viewBox="0 0 1400 600" role="img" aria-labelledby="title">
+  <title id="title">시스템 아키텍처</title>
+  <defs>
+    <marker id="sArrowSolid" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#33475b"/>
+    </marker>
+    <marker id="sArrowDashed" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#7c8a9a"/>
+    </marker>
+    <style>
+      .title{font:700 26px system-ui,sans-serif;fill:#0f2438}
+      .lanelabel{font:700 15px system-ui,sans-serif}
+      .pillText{font:700 12px system-ui,sans-serif;fill:#ffffff;text-anchor:middle}
+      .cardMain{font:600 14px system-ui,sans-serif;fill:#1e293b;text-anchor:middle}
+      .cardCode{font:500 10.5px ui-monospace,monospace;fill:#64748b;text-anchor:middle}
+      .solid{stroke:#33475b;stroke-width:2.2;fill:none;marker-end:url(#sArrowSolid)}
+      .dashed{stroke:#7c8a9a;stroke-width:2;fill:none;stroke-dasharray:6,5;marker-end:url(#sArrowDashed)}
+    </style>
+  </defs>
+
+  <rect width="1400" height="600" fill="#ffffff"/>
+  <text x="70" y="42" class="title">시스템 아키텍처</text>
+
+  <rect x="70" y="90" width="1260" height="140" rx="6" fill="#eaf2ff" stroke="#bcd6f2" stroke-width="1.5"/>
+  <text x="100" y="113" class="lanelabel" fill="#2b6cb0">클라이언트</text>
+
+  <rect x="70" y="250" width="1260" height="140" rx="6" fill="#e8f7f3" stroke="#b9e4d8" stroke-width="1.5"/>
+  <text x="100" y="273" class="lanelabel" fill="#0f766e">애플리케이션 서비스</text>
+
+  <rect x="70" y="410" width="1260" height="140" rx="6" fill="#f1f3f7" stroke="#d3d9e3" stroke-width="1.5"/>
+  <text x="100" y="433" class="lanelabel" fill="#475569">저장·모델 서빙</text>
+
+  <!-- Lane1 클라이언트 -->
+  <rect x="165" y="128" width="170" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="250" y="155" class="cardMain">외부 클라이언트</text>
+  <text x="250" y="173" class="cardCode">REST 호출</text>
+
+  <rect x="565" y="128" width="170" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="650" y="155" class="cardMain">웹 UI</text>
+  <text x="650" y="173" class="cardCode">Streamlit :8501</text>
+
+  <!-- Lane2 애플리케이션 서비스 -->
+  <rect x="165" y="288" width="170" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="250" y="315" class="cardMain">검수 API</text>
+  <text x="250" y="333" class="cardCode">review/api.py</text>
+
+  <rect x="565" y="288" width="170" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="650" y="315" class="cardMain">검색 API</text>
+  <text x="650" y="333" class="cardCode">search/api.py</text>
+
+  <rect x="965" y="288" width="170" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="1050" y="315" class="cardMain">비동기 워커</text>
+  <text x="1050" y="333" class="cardCode">celery worker</text>
+
+  <!-- Lane3 저장·모델 서빙 -->
+  <rect x="205" y="448" width="190" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="300" y="475" class="cardMain">PostgreSQL+pgvector</text>
+  <text x="300" y="493" class="cardCode">:5433</text>
+
+  <rect x="555" y="448" width="190" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="650" y="475" class="cardMain">Redis</text>
+  <text x="650" y="493" class="cardCode">:6379 broker</text>
+
+  <rect x="805" y="448" width="190" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="900" y="475" class="cardMain">Ollama</text>
+  <text x="900" y="493" class="cardCode">:11434 LLM</text>
+
+  <rect x="1055" y="448" width="190" height="64" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.3"/>
+  <text x="1150" y="475" class="cardMain">embedder(BGE-M3)</text>
+  <text x="1150" y="493" class="cardCode">:8100</text>
+
+  <!-- ===== 요청(실선) / 회신(점선) ===== -->
+  <!-- A: 외부 클라이언트 ↔ 검수 API -->
+  <path d="M240,192 L240,288" class="solid"/>
+  <path d="M260,288 L260,192" class="dashed"/>
+
+  <!-- B: 웹 UI ↔ 검색 API (01/04) -->
+  <path d="M640,192 L640,288" class="solid"/>
+  <path d="M660,288 L660,192" class="dashed"/>
+
+  <!-- C: 검수 API ↔ 비동기 워커 (카드 상단 위 공간으로 우회) -->
+  <path d="M300,288 L300,260 L1020,260 L1020,288" class="solid"/>
+  <path d="M1000,288 L1000,274 L320,274 L320,288" class="dashed"/>
+
+  <!-- D: 비동기 워커 ↔ Redis -->
+  <path d="M1000,352 L700,448" class="solid"/>
+  <path d="M720,448 L1020,352" class="dashed"/>
+
+  <!-- E: 비동기 워커 ↔ Ollama -->
+  <path d="M1020,352 L930,448" class="solid"/>
+  <path d="M950,448 L1040,352" class="dashed"/>
+
+  <!-- F: 비동기 워커 ↔ embedder -->
+  <path d="M1070,352 L1140,448" class="solid"/>
+  <path d="M1160,448 L1090,352" class="dashed"/>
+
+  <!-- H: 검색 API ↔ Ollama (02) -->
+  <path d="M700,352 L870,448" class="solid"/>
+  <path d="M890,448 L720,352" class="dashed"/>
+
+  <!-- I: 검색 API ↔ PostgreSQL (03) -->
+  <path d="M600,352 L350,448" class="solid"/>
+  <path d="M330,448 L620,352" class="dashed"/>
+
+  <!-- J: 검수 API ↔ PostgreSQL -->
+  <path d="M275,352 L255,448" class="solid"/>
+  <path d="M235,448 L255,352" class="dashed"/>
+
+  <!-- ===== 대표 요청 경로 pill (검색 요청) — 선 위에 최종적으로 표시 ===== -->
+  <rect x="593" y="214" width="34" height="22" rx="11" fill="#1f3a5f"/>
+  <text x="610" y="230" class="pillText">01</text>
+  <rect x="683" y="214" width="34" height="22" rx="11" fill="#1f3a5f"/>
+  <text x="700" y="230" class="pillText">04</text>
+  <rect x="783" y="369" width="34" height="22" rx="11" fill="#1f3a5f"/>
+  <text x="800" y="385" class="pillText">02</text>
+  <rect x="443" y="369" width="34" height="22" rx="11" fill="#1f3a5f"/>
+  <text x="460" y="385" class="pillText">03</text>
+</svg>

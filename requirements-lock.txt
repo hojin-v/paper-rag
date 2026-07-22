@@ -154,7 +154,7 @@ narwhals==2.24.0
     #   scikit-learn
 networkx==3.6.1
     # via torch
-numpy==2.5.1
+numpy==2.3.5
     # via
     #   pandas
     #   paperrag (pyproject.toml)
@@ -164,6 +164,12 @@ numpy==2.5.1
     #   sentence-transformers
     #   streamlit
     #   transformers
+    # 2026-07-22: pip-compile이 고른 2.5.1 대신 2.3.5로 수동 하향 고정했다. 이 락파일은
+    # ocr/ingest-full extra(paddlepaddle, paddlex)를 고려하지 않고 생성됐는데(파일 상단
+    # 주석 참고), paddlex 3.7.x가 numpy<2.4를 요구해서 2.5.1과 실제 배포 시 충돌한다
+    # (docker compose build 실측으로 처음 발견). 2.3.5는 paddlex의 상한(<2.4)과 이
+    # 목록의 나머지 패키지 하한을 모두 만족하는 가장 최신 버전이다. ocr extra까지
+    # 포함한 정식 재생성(pip-compile을 Linux 빌드 환경에서 실행)이 근본 해결책이다.
 openpyxl==3.1.5
     # via paperrag (pyproject.toml)
 packaging==26.2
@@ -234,11 +240,15 @@ python-dotenv==1.2.2
     #   uvicorn
 python-multipart==0.0.32
     # via streamlit
-pyyaml==6.0.3
+pyyaml==6.0.2
     # via
     #   huggingface-hub
     #   transformers
     #   uvicorn
+    # 2026-07-22: pip-compile이 고른 6.0.3 대신 6.0.2로 수동 하향 고정했다. numpy와 같은
+    # 이유(파일 상단 주석 참고) — paddlex 3.7.x가 PyYAML==6.0.2를 정확히 요구해서
+    # 6.0.3과 실제 배포 시 충돌한다(docker compose build 실측으로 발견). huggingface-hub/
+    # transformers/uvicorn은 모두 하한(>=)만 요구해 6.0.2로도 만족된다.
 redis==6.4.0
     # via kombu
 referencing==0.37.0
@@ -293,8 +303,19 @@ tokenizers==0.22.2
     # via transformers
 toml==0.10.2
     # via streamlit
-torch==2.2.2
+torch==2.8.0+cpu
     # via sentence-transformers
+    # 2026-07-22: pip-compile이 고른 2.2.2 대신 2.8.0+cpu로 수동 상향 고정했다(두 단계로
+    # 발견됨). sentence-transformers 자체는 torch>=1.11.0으로만 선언해(파일 상단 주석과
+    # 같은 이유로 pip-compile이 이걸 그냥 통과시켰다) 문제를 못 잡았지만: (1) transformers
+    # 5.x가 import 시점에 "torch>=2.4 아니면 비활성화"를 코드로 직접 검사하고(pip 메타데이터
+    # 제약이 아니라 런타임 체크라 pip-compile 해석 단계에서 안 드러남), (2) 2.4.1로도
+    # `torch.distributed.tensor.DTensor` import가 실패했다(그 경로의 DTensor 재노출은
+    # torch 2.5.0부터 생김 — transformers 5.14.1의 `distributed/sharding_utils.py`가 이걸
+    # 직접 import). 여기에 더해, PyPI 기본 torch 배포판은 CUDA 런타임을 통째로 끌고 오는데
+    # (Dockerfile 주석 참고) 이 서버는 GPU가 없어 전혀 안 쓴다 — 그래서 버전만 올리는 대신
+    # download.pytorch.org의 "+cpu" 전용 빌드로 바꿨다. 2.8.0은 그 인덱스에 있는 안정
+    # 릴리스 중 DTensor 요구도 만족하는 버전이다.
 tqdm==4.69.0
     # via
     #   huggingface-hub

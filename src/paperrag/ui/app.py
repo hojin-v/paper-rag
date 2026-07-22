@@ -291,68 +291,46 @@ def _render_search(st: Any, client: ApiClient) -> None:
     3. 세션 상태(`st.session_state["result"]`/`["suggestion"]`)에 남아있는 이전 결과나
        제안을 다시 렌더링해, 위젯 상호작용으로 인한 재실행(rerun) 후에도 화면이 유지되게 한다.
 
-    "검색 옵션"에 산출물 구성을 사용자가 직접 고를 수 있게 네 가지를 노출한다.
-    (1) 섹션 필터 — 산출물에 포함할 단락을 section_name 부분 일치로 좁힌다.
-    (2) "AI 자연어 검색" 체크박스 — 기본은 꺼져 있고, 이때는 서버가 LLM 없이
-    형태소 분석만으로 키워드를 뽑아 빠르고 여러 사용자가 동시에 써도 대기열이
-    생기지 않는다. 켜면 LLM 자연어 이해 경로를 타지만 Ollama가 요청을 직렬
-    처리하므로(실측: 건당 18~20초) 느려질 수 있다는 점을 캡션으로 미리 알린다.
-    (3) "연관 논문 포함" — 끄면 연관 논문 조회 자체를 생략하고 결과·엑셀에서
-    연관 논문 관련 내용을 뺀다. (4) "표 포함" — 끄면 표 조회를 생략하고 엑셀의
-    표 시트를 만들지 않는다.
+    질의 키워드 추출은 항상 Ollama LLM으로 이뤄진다(2026-07-22 결정 — 형태소
+    분석 빠른 경로는 더 이상 사용자가 고르는 옵션이 아니라 LLM 실패 시의 내부
+    안전망일 뿐이다). 그래서 검색 폼에는 "AI 검색 사용" 같은 경로 선택 체크박스가
+    없다 — 매 검색이 LLM 호출 1회(직렬 처리, 실측 건당 18~20초) 이상을 수반하며,
+    이 지연·동시성 특성에 필요한 서버 사양은
+    `docs/reports/assessments/2026-07-22-llm-search-capacity.md`에 따로 정리했다.
+
+    연관 논문 포함/표 포함/초록 포함/섹션 선택은 전부 "검색이 무엇을 찾을지"가
+    아니라 "찾은 결과를 엑셀에 어떻게 담을지"를 정하는 산출물 옵션이라, 이 폼에
+    두지 않는다. 첫 검색은 항상 기본값(연관 논문·표·초록 전부 포함, 섹션 필터
+    없음)으로 실행되고, 결과가 나온 뒤 `_render_output_options`에서 그 결과를
+    바탕으로 산출물 구성을 다시 골라 같은 질의를 재검색한다(어떤 섹션 제목이
+    있는지 자체가 검색 결과를 봐야 알 수 있는 정보이기도 하다).
     """
     st.subheader("논문 검색")
 
     with st.form("search_form"):
         query = st.text_input("질의", value=st.session_state["query"])
-        with st.expander("검색 옵션"):
-            section_query = st.text_input(
-                "특정 섹션만 보기(선택)",
-                value=st.session_state["section_query"],
-                help="예: '실험', '방법론', '결과'. 비워두면 관련 있는 모든 단락을 결과에 포함합니다.",
-            )
-            option_columns = st.columns(3)
-            use_llm = option_columns[0].checkbox(
-                "AI 자연어 검색 사용",
-                value=st.session_state["use_llm"],
-                help=(
-                    "기본은 형태소 분석 기반 빠른 키워드 추출(LLM 미사용)입니다. "
-                    "자연어 의도를 더 잘 이해하려면 켤 수 있지만, LLM 호출은 직렬 처리라 "
-                    "동시 사용자가 있으면 건당 최소 십수 초 이상 대기할 수 있습니다."
-                ),
-            )
-            include_related = option_columns[1].checkbox(
-                "연관 논문 포함",
-                value=st.session_state["include_related"],
-                help="끄면 연관 논문 조회를 생략하고 결과·엑셀에서 연관 논문 항목을 뺍니다.",
-            )
-            include_tables = option_columns[2].checkbox(
-                "표 포함",
-                value=st.session_state["include_tables"],
-                help="끄면 표 조회를 생략하고 엑셀에 표 데이터/표 셀 시트를 만들지 않습니다.",
-            )
         submitted = st.form_submit_button("검색")
 
     if submitted:
         st.session_state["query"] = query
-        st.session_state["section_query"] = section_query
-        st.session_state["use_llm"] = use_llm
-        st.session_state["include_related"] = include_related
-        st.session_state["include_tables"] = include_tables
-        spinner_text = (
-            "AI로 질의를 분석하고 있습니다(동시 사용량에 따라 오래 걸릴 수 있습니다)..."
-            if use_llm
-            else "질의 키워드를 분석하고 논문을 검색하고 있습니다..."
-        )
-        with st.spinner(spinner_text):
+        # 첫 검색은 항상 기본 구성(전체 포함, 섹션 필터 없음)으로 실행한다.
+        # 산출물을 좁히는 건 결과를 본 뒤 _render_output_options의 몫이다.
+        st.session_state["section_query"] = None
+        st.session_state["include_related"] = True
+        st.session_state["include_tables"] = True
+        st.session_state["include_abstract"] = True
+        with st.spinner(
+            "AI가 질의를 분석하고 관련 논문을 찾고 있습니다"
+            "(LLM 직렬 처리라 잠시 걸릴 수 있습니다)..."
+        ):
             _run_search(
                 st,
                 client,
                 query,
-                use_llm=use_llm,
-                section_query=section_query.strip() or None,
-                include_related=include_related,
-                include_tables=include_tables,
+                section_query=None,
+                include_related=True,
+                include_tables=True,
+                include_abstract=True,
             )
 
     suggestion = st.session_state.get("suggestion")
@@ -815,10 +793,10 @@ def _ensure_state(st: Any) -> None:
     """
     defaults = {
         "query": "",
-        "section_query": "",
-        "use_llm": False,
+        "section_query": None,
         "include_related": True,
         "include_tables": True,
+        "include_abstract": True,
         "result": None,
         "suggestion": None,
         "suggest_session_id": None,
@@ -837,17 +815,19 @@ def _run_search(
     client: ApiClient,
     query: str,
     *,
-    use_llm: bool = False,
     section_query: str | None = None,
     include_related: bool = True,
     include_tables: bool = True,
+    include_abstract: bool = True,
 ) -> None:
     """검색 폼 제출을 처리한다: 질의 검증 → API 호출 → 정확 매칭/유사 키워드 제안 분기 저장.
 
     응답이 `SearchMatched`면 결과를 세션에 저장하고(`_set_result`), 그 외(유사 키워드 제안
     `SearchSuggest`)면 제안을 세션에 저장한다(`_set_suggestion`). 실제 렌더링은 이 함수가
     아니라 `_render_search`가 세션 상태를 읽어서 수행한다. 옵션 인자는 그대로
-    `client.search`에 전달된다.
+    `client.search`에 전달된다. 결과 화면의 "결과물 구성"(`_render_output_options`)도
+    같은 함수를 재사용해 include_related/include_tables/include_abstract/section_query만
+    바꿔 다시 호출한다.
     """
     normalized_query = query.strip()
     if not normalized_query:
@@ -857,10 +837,10 @@ def _run_search(
     try:
         response = client.search(
             normalized_query,
-            use_llm=use_llm,
             section_query=section_query,
             include_related=include_related,
             include_tables=include_tables,
+            include_abstract=include_abstract,
         )
     except ApiUnavailable as exc:
         st.error(str(exc))
@@ -936,11 +916,77 @@ def _render_result(
         st.info("연관 논문이 없습니다.")
 
     _render_search_review_results(st, client, result)
+    _render_output_options(st, client, result)
 
     st.caption(
         "메타데이터, 섹션별 원문·요약, 단락별 원문·요약·키워드, 표 셀은 아래 엑셀에서 확인할 수 있습니다."
     )
     _render_download(st, client, result.result_id)
+
+
+def _render_output_options(st: Any, client: ApiClient, result: SearchMatched) -> None:
+    """검색이 아니라 "찾은 결과를 엑셀에 어떻게 담을지"를 정하는 산출물 옵션을 그린다.
+
+    연관 논문 포함/표 포함/초록 포함/섹션 선택 네 가지는 전부 이미 확정된 검색
+    결과에서 무엇을 보여줄지만 좁히는 것이라(대표/연관 논문 선정 자체에는
+    영향 없음), 검색 폼이 아니라 결과 화면에 둔다. 섹션 선택지(`result.available_sections`)는
+    이 논문에 실제로 존재하는 section_name을 문서 등장 순서로 합친 목록이라
+    자유 텍스트 입력 없이 바로 고를 수 있다. "적용"을 누르면 직전과 같은
+    질의(`query`)를 유지한 채 이 네 옵션만 바꿔 `_run_search`를 다시 호출해
+    결과(및 엑셀)를 재구성한다.
+    """
+    st.subheader("결과물 구성")
+
+    with st.form(f"output_options_{result.result_id}"):
+        option_columns = st.columns(3)
+        include_related = option_columns[0].checkbox(
+            "연관 논문 포함",
+            value=st.session_state["include_related"],
+            help="끄면 연관 논문 조회를 생략하고 결과·엑셀에서 연관 논문 항목을 뺍니다.",
+        )
+        include_tables = option_columns[1].checkbox(
+            "표 포함",
+            value=st.session_state["include_tables"],
+            help="끄면 표 조회를 생략하고 엑셀에 표 데이터/표 셀 시트를 만들지 않습니다.",
+        )
+        include_abstract = option_columns[2].checkbox(
+            "초록 포함",
+            value=st.session_state["include_abstract"],
+            help="끄면 논문 정보 시트의 초록 원문·초록 요약 칸을 비웁니다.",
+        )
+
+        section_query: str | None = st.session_state.get("section_query")
+        if result.available_sections:
+            all_option = "전체 보기"
+            options = [all_option, *result.available_sections]
+            current = st.session_state.get("section_query")
+            current_index = options.index(current) if current in options else 0
+            chosen = st.selectbox(
+                "특정 섹션만 포함",
+                options,
+                index=current_index,
+                help="이 논문에 실제로 있는 섹션 제목 중 하나만 골라 결과·엑셀 단락을 좁힙니다.",
+            )
+            section_query = None if chosen == all_option else chosen
+
+        applied = st.form_submit_button("이 구성으로 다시 만들기")
+
+    if applied:
+        st.session_state["include_related"] = include_related
+        st.session_state["include_tables"] = include_tables
+        st.session_state["include_abstract"] = include_abstract
+        st.session_state["section_query"] = section_query
+        with st.spinner("선택한 구성으로 결과를 다시 만들고 있습니다..."):
+            _run_search(
+                st,
+                client,
+                st.session_state["query"],
+                section_query=section_query,
+                include_related=include_related,
+                include_tables=include_tables,
+                include_abstract=include_abstract,
+            )
+        st.rerun()
 
 
 def _render_search_review_results(
@@ -1012,10 +1058,19 @@ def _render_paper_card(
     paper: PaperSummary,
     matched_keyword: str,
 ) -> None:
-    """대표/연관 논문 카드 하나(제목·저자·연도·저널·매칭 키워드·점수·선정 사유)를 그린다."""
+    """대표/연관 논문 카드 하나(관련도 설명·제목·저자·연도·저널·매칭 키워드·점수·선정 사유)를 그린다.
+
+    relevance_summary(LLM이 이 논문에서 가장 유사한 단락을 근거로 생성한 "왜
+    이 논문인가" 설명)를 제목 바로 아래에 강조 표시한다 — 사용자가 엑셀을
+    내려받기 전에 이 논문이 실제로 원하는 내용인지 먼저 판단할 수 있게 하기
+    위함이다. 생성에 실패해 relevance_summary가 없으면(드묾, 단락 자체가 없는
+    경우 등) 이 블록은 그냥 생략된다.
+    """
     with st.container(border=True):
         st.markdown(f"#### {label}")
         st.markdown(f"**{paper.title}**")
+        if paper.relevance_summary:
+            st.info(paper.relevance_summary)
         rows = [
             ("저자", paper.authors or "-"),
             ("연도", str(paper.published_year) if paper.published_year is not None else "-"),

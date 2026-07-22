@@ -43,9 +43,13 @@ def test_build_excel_writes_sections_paragraphs_and_table_cells(tmp_path: Path) 
     assert summary["G2"].value == "Related OCR Paper"
     assert summary["H1"].value == "대표 RAG 점수"
     assert summary["H2"].value == 0.89
-    assert summary["J1"].value == "연관 관계 점수"
-    assert summary["J2"].value == 0.77
-    assert summary["K2"].value == "겹치는 키워드: RAG"
+    assert summary["J1"].value == "대표 관련도 설명"
+    assert summary["J2"].value == "대표 논문 관련도 설명"
+    assert summary["K1"].value == "연관 관계 점수"
+    assert summary["K2"].value == 0.77
+    assert summary["L2"].value == "겹치는 키워드: RAG"
+    assert summary["M1"].value == "연관 관련도 설명"
+    assert summary["M2"].value == "연관 논문 관련도 설명"
 
     primary_info = workbook["대표 논문 정보"]
     assert primary_info["A1"].value == "논문 ID"
@@ -156,6 +160,7 @@ def _bundle() -> ResultBundle:
             keywords=["RAG", "검색"],
             score=0.89,
             reason="대표 점수=0.890",
+            relevance_summary="대표 논문 관련도 설명",
         ),
         related_paper=PaperSummary(
             paper_id=30,
@@ -168,6 +173,7 @@ def _bundle() -> ResultBundle:
             keywords=["OCR"],
             score=0.77,
             reason="겹치는 키워드: RAG",
+            relevance_summary="연관 논문 관련도 설명",
         ),
         primary_info=PaperInfo(
             paper_id=10,

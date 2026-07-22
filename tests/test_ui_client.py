@@ -13,10 +13,10 @@ def test_search_parses_matched_response() -> None:
         assert request.url.path == "/search"
         assert json.loads(request.content) == {
             "query": "RAG 논문",
-            "use_llm": False,
             "section_query": None,
             "include_related": True,
             "include_tables": True,
+            "include_abstract": True,
         }
         return httpx.Response(200, json=_matched_body())
 

@@ -21,10 +21,13 @@ class FakeLLM:
 
 
 class RaisingLLM:
-    """호출되면 즉시 실패하는 LLM 더블. 기본 검색 경로가 LLM을 전혀 부르지 않음을 증명하는 데 쓴다."""
+    """호출되면 즉시 실패하는 LLM 더블. 특정 경로가 LLM을 전혀 부르지 않아야 함을 증명하는 데 쓴다
+
+    (예: 캐시 히트 경로, 이미 생성된 relevance_summary 재사용 경로).
+    """
 
     def generate_json(self, prompt: str, schema_hint: str) -> dict[str, Any]:
-        raise AssertionError("기본 검색 경로(use_llm=False)는 LLM을 호출하면 안 된다.")
+        raise AssertionError("이 경로는 LLM을 호출하면 안 된다.")
 
 
 class StaticEmbeddingClient:
@@ -53,6 +56,77 @@ def test_exact_match_returns_matched(tmp_path: Path) -> None:
     assert result.primary_paper.paper_id == 10
     assert result.related_paper is not None
     assert result.related_paper.paper_id == 30
+    # 대표 논문(10, section_name="Introduction") 섹션이 먼저, 연관 논문(30,
+    # section_name="Related") 섹션이 뒤에 이어붙어야 한다(등장 순서 보존).
+    assert result.available_sections == ["Introduction", "Related"]
+
+
+def test_resolve_include_abstract_false_blanks_abstract_and_bypasses_cache(
+    tmp_path: Path,
+) -> None:
+    """include_abstract=False는 기본 뷰가 아니므로 캐시를 타지 않고, 초록 칸을 비워야 한다."""
+    service = _service(tmp_path, [{"keywords": ["RAG"]}])
+
+    result = service.search("RAG 관련 대표 논문", include_abstract=False)
+
+    assert isinstance(result, SearchMatched)
+    bundle_path = Path(service.settings.result_dir) / f"{result.result_id}.xlsx"
+    assert bundle_path.exists()
+
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(bundle_path)
+    sheet = workbook["대표 논문 정보"]
+    header = [cell.value for cell in sheet[1]]
+    row = [cell.value for cell in sheet[2]]
+    values = dict(zip(header, row, strict=True))
+    assert values["초록 원문"] in (None, "")
+    assert values["초록 요약"] in (None, "")
+
+
+def test_search_generates_relevance_summary_for_primary_paper(tmp_path: Path) -> None:
+    """대표 논문에는 LLM이 생성한 관련도 설명(RAG 생성 단계)이 채워져야 한다."""
+    service = _service(
+        tmp_path,
+        [{"keywords": ["RAG"]}, {"summary": "이 논문은 RAG 검색을 다룬다."}],
+    )
+
+    result = service.search("RAG 관련 대표 논문")
+
+    assert isinstance(result, SearchMatched)
+    assert result.primary_paper.relevance_summary == "이 논문은 RAG 검색을 다룬다."
+
+
+def test_relevance_summary_reused_from_cache_without_calling_llm_again(tmp_path: Path) -> None:
+    """같은 keyword_id로 다시 계산할 때 이미 생성된 관련도 설명은 LLM을 다시 부르지 않고 재사용해야 한다."""
+    service = _service(
+        tmp_path,
+        [{"keywords": ["RAG"]}, {"summary": "이 논문은 RAG 검색을 다룬다."}],
+    )
+    first = service.search("RAG 관련 대표 논문")
+    assert isinstance(first, SearchMatched)
+    assert first.primary_paper.relevance_summary == "이 논문은 RAG 검색을 다룬다."
+
+    # 캐시된 값이 있으므로 이후 호출에서 LLM을 다시 부르면 즉시 실패해야 한다.
+    service.llm = RaisingLLM()
+    second = service.resolve(
+        1,
+        "RAG 관련 대표 논문",
+        "exact",
+        matched_keyword="RAG",
+        force_refresh=True,
+    )
+
+    assert second.primary_paper.relevance_summary == "이 논문은 RAG 검색을 다룬다."
+
+
+def test_relevance_summary_falls_back_to_paragraph_text_when_llm_fails(tmp_path: Path) -> None:
+    """관련도 설명 생성이 실패해도 검색 자체는 막히지 않고 근거 단락 원문으로 대체해야 한다."""
+    service = SearchService(_repo(), RaisingLLM(), StaticEmbeddingClient(), _settings(tmp_path))
+
+    result = service.resolve(1, "RAG 관련 논문", "exact", matched_keyword="RAG", include_related=False)
+
+    assert result.primary_paper.relevance_summary == "RAG cleaned paragraph"
 
 
 def test_unmatched_query_returns_three_suggestions(tmp_path: Path) -> None:
@@ -113,37 +187,16 @@ def test_orphan_keyword_is_not_exact_match_or_suggestion(tmp_path: Path) -> None
     assert all(candidate.keyword_id != 5 for candidate in result.candidates)
 
 
-def test_default_search_never_calls_llm(tmp_path: Path) -> None:
-    """use_llm 기본값(False)에서는 RaisingLLM이 주입돼도 절대 호출되지 않아야 한다.
+def test_search_extracts_keywords_via_llm(tmp_path: Path) -> None:
+    """질의 키워드 추출은 항상 LLM을 거친다 — 질의 문자열에 없는 키워드도 LLM이
 
-    빠른 경로(형태소 분석 또는 정규식 폴백)만으로 정확 매칭까지 완료되는지 확인한다.
-    """
-    settings = Settings(
-        _env_file=None,
-        result_dir=tmp_path,
-        search_suggestion_limit=3,
-        search_similarity_threshold=0.6,
-        embed_dim=2,
-    )
-    service = SearchService(_repo(), RaisingLLM(), StaticEmbeddingClient(), settings)
-
-    result = service.search("RAG 관련 대표 논문")
-
-    assert isinstance(result, SearchMatched)
-    assert result.match_type == "exact"
-    assert result.primary_paper.paper_id == 10
-
-
-def test_use_llm_true_invokes_llm_path(tmp_path: Path) -> None:
-    """use_llm=True면 질의 문자열에 없는 키워드도 LLM이 추출한 값을 그대로 써서 매칭한다.
-
-    질의에는 "RAG"라는 문자열이 전혀 없으므로 빠른 경로(형태소 분석/정규식)로는 절대
-    "RAG"를 추출할 수 없다 — 정확 매칭이 성공했다는 것 자체가 LLM 경로가 실제로
-    쓰였다는 증거다.
+    추출한 값을 그대로 써서 매칭한다. 질의에는 "RAG"라는 문자열이 전혀 없으므로
+    내부 안전망(형태소 분석/정규식)으로는 절대 "RAG"를 추출할 수 없다 — 정확
+    매칭이 성공했다는 것 자체가 LLM 경로가 실제로 쓰였다는 증거다.
     """
     service = _service(tmp_path, [{"keywords": ["RAG"]}])
 
-    result = service.search("이 논문에 대해서 뭔가 알려줘", use_llm=True)
+    result = service.search("이 논문에 대해서 뭔가 알려줘")
 
     assert isinstance(result, SearchMatched)
     assert result.match_type == "exact"
@@ -165,7 +218,7 @@ def test_include_related_false_skips_relation_lookup_and_response(tmp_path: Path
         search_similarity_threshold=0.6,
         embed_dim=2,
     )
-    service = SearchService(repo, RaisingLLM(), StaticEmbeddingClient(), settings)
+    service = SearchService(repo, FakeLLM([{"keywords": ["RAG"]}]), StaticEmbeddingClient(), settings)
 
     result = service.search("RAG 관련 대표 논문", include_related=False)
 
@@ -188,7 +241,7 @@ def test_include_tables_false_skips_table_lookup(tmp_path: Path) -> None:
         search_similarity_threshold=0.6,
         embed_dim=2,
     )
-    service = SearchService(repo, RaisingLLM(), StaticEmbeddingClient(), settings)
+    service = SearchService(repo, FakeLLM([{"keywords": ["RAG"]}]), StaticEmbeddingClient(), settings)
 
     result = service.search("RAG 관련 대표 논문", include_tables=False)
 

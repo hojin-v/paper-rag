@@ -123,21 +123,22 @@ async def search(
 
     정확 매칭에 성공하면 대표/연관 논문이 포함된 SearchMatched를, 실패하면
     유사 키워드 후보와 session_id가 담긴 SearchSuggest를 반환한다(2단계로 이어짐).
-    request.use_llm(기본 False)이 꺼져 있으면 키워드 추출은 LLM 없이 형태소
-    분석만으로 이뤄지고, request.section_query가 있으면 결과 단락을 그 섹션으로
-    좁힌다. request.include_related/include_tables(기본 True)를 끄면 연관 논문·
-    표 관련 조회와 엑셀 시트를 아예 생략한다. SearchNoPaperFound는 404로,
-    LLM/임베딩 응답을 신뢰할 수 없는 SearchDependencyError는 503으로 변환한다
-    (임시로 규칙 기반 결과를 조작해 보여주지 않기 위함).
+    키워드 추출은 항상 LLM(Ollama)으로 이뤄진다. request.section_query가 있으면
+    결과 단락을 그 섹션으로 좁힌다(SearchMatched.available_sections가 실제 선택
+    가능한 섹션 제목 목록을 알려준다). request.include_related/include_tables/
+    include_abstract(기본 True)를 끄면 연관 논문·표 관련 조회·엑셀 시트, 초록
+    칸을 각각 생략/공백 처리한다. SearchNoPaperFound는 404로, LLM/임베딩 응답을
+    신뢰할 수 없는 SearchDependencyError는 503으로 변환한다(임시로 규칙 기반
+    결과를 조작해 보여주지 않기 위함).
     """
     try:
         return await run_in_threadpool(
             service.search,
             request.query,
-            use_llm=request.use_llm,
             section_query=request.section_query,
             include_related=request.include_related,
             include_tables=request.include_tables,
+            include_abstract=request.include_abstract,
         )
     except SearchNoPaperFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

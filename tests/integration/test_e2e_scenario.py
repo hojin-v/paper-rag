@@ -292,11 +292,9 @@ def test_exact_match_search_and_excel(
     e2e_context: E2EContext,
     search_service: SearchService,
 ) -> None:
-    # use_llm=True: 이 테스트는 ScriptedLLM의 프롬프트별 키워드 시나리오(자연어 이해 경로)를
-    # 검증하는 것이 목적이므로, 기본값인 형태소 분석 빠른 경로가 아니라 명시적으로 AI 경로를 켠다.
+    # 키워드 추출은 항상 LLM(ScriptedLLM의 프롬프트별 키워드 시나리오)을 거친다.
     result = search_service.search(
         "스마트팩토리에서 이상탐지를 위한 딥러닝 기반 예측 유지보수 논문을 찾고 싶다",
-        use_llm=True,
     )
 
     assert isinstance(result, SearchMatched)
@@ -314,8 +312,8 @@ def test_similar_keyword_suggest_select_and_excel(
     e2e_context: E2EContext,
     search_service: SearchService,
 ) -> None:
-    # use_llm=True: ScriptedLLM의 "예지보전" 시나리오(자연어 이해 경로)를 검증한다.
-    suggestion = search_service.search("예지보전 관련 논문", use_llm=True)
+    # 키워드 추출은 항상 LLM(ScriptedLLM의 "예지보전" 시나리오)을 거친다.
+    suggestion = search_service.search("예지보전 관련 논문")
 
     assert isinstance(suggestion, SearchSuggest)
     candidates = {candidate.keyword: candidate for candidate in suggestion.candidates}
@@ -349,7 +347,7 @@ def test_section_query_filters_paragraph_sheet_against_real_postgres(
     """
     query = "스마트팩토리에서 이상탐지를 위한 딥러닝 기반 예측 유지보수 논문을 찾고 싶다"
 
-    unfiltered = search_service.search(query, use_llm=True)
+    unfiltered = search_service.search(query)
     assert isinstance(unfiltered, SearchMatched)
     unfiltered_rows = _paragraph_row_count(search_service, unfiltered.result_id)
     assert unfiltered_rows > 1  # 헤더 + 최소 1개 데이터 행
@@ -357,12 +355,12 @@ def test_section_query_filters_paragraph_sheet_against_real_postgres(
     # SimpleTextLayerBackend는 section_header 블록 타입을 만들지 않으므로, 이 픽스처의
     # 모든 논문 단락은 paragraphs.build_paragraphs의 기본 섹션명("본문") 그대로 저장된다.
     # 부분 일치 필터를 걸어도 전량이 그대로 남아야 한다.
-    matching = search_service.search(query, use_llm=True, section_query="본문")
+    matching = search_service.search(query, section_query="본문")
     assert isinstance(matching, SearchMatched)
     assert _paragraph_row_count(search_service, matching.result_id) == unfiltered_rows
 
     # 존재하지 않는 섹션으로 필터하면 헤더 행만 남아야 한다.
-    empty = search_service.search(query, use_llm=True, section_query="이런섹션은없다")
+    empty = search_service.search(query, section_query="이런섹션은없다")
     assert isinstance(empty, SearchMatched)
     assert _paragraph_row_count(search_service, empty.result_id) == 1
 
@@ -441,12 +439,11 @@ def test_references_are_excluded_from_paragraphs(e2e_context: E2EContext) -> Non
 
 
 def test_api_level_search_select_and_excel(api_client: TestClient) -> None:
-    # use_llm=True: API 계층에서도 ScriptedLLM 자연어 이해 경로가 그대로 동작하는지 확인한다.
+    # API 계층에서도 ScriptedLLM 자연어 이해 경로(키워드 추출은 항상 LLM)가 그대로 동작하는지 확인한다.
     matched_response = api_client.post(
         "/search",
         json={
             "query": "스마트팩토리에서 이상탐지를 위한 딥러닝 기반 예측 유지보수 논문을 찾고 싶다",
-            "use_llm": True,
         },
     )
 
@@ -462,9 +459,7 @@ def test_api_level_search_select_and_excel(api_client: TestClient) -> None:
     )
     assert load_workbook(BytesIO(excel_response.content)).sheetnames == _expected_sheet_names()
 
-    suggest_response = api_client.post(
-        "/search", json={"query": "예지보전 관련 논문", "use_llm": True}
-    )
+    suggest_response = api_client.post("/search", json={"query": "예지보전 관련 논문"})
     assert suggest_response.status_code == 200
     suggestion = suggest_response.json()
     assert suggestion["status"] == "suggest"

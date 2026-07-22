@@ -143,6 +143,22 @@ def test_search_matched_and_excel_download(
     assert excel_response.content.startswith(b"PK")
 
 
+def test_search_response_exposes_available_sections_and_accepts_include_abstract(
+    client_with_service: tuple[TestClient, SearchService],
+) -> None:
+    """UI가 자유 텍스트 대신 드롭다운을 채울 수 있도록 실제 섹션 목록이 응답에 담겨야 한다."""
+    client, _ = client_with_service
+
+    response = client.post(
+        "/search",
+        json={"query": "RAG 관련 논문", "include_abstract": False},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["available_sections"] == ["Intro", "Related"]
+
+
 def test_search_suggest_and_select(client_with_service: tuple[TestClient, SearchService]) -> None:
     client, _ = client_with_service
 

@@ -153,8 +153,26 @@ class SearchRepository(Protocol):
         단락만 반환한다 — 사용자가 검색 산출물의 특정 섹션만 받고 싶을 때 쓰는 필터다.
         """
 
+    def top_matching_paragraph(
+        self, paper_id: int, vec: Sequence[float]
+    ) -> ParagraphRow | None:
+        """이 논문에서 질의 임베딩과 가장 유사한 단락 1개를 원문·정제문까지 포함해 반환한다.
+
+        `best_paragraph_similarity`와 같은 기준(코사인 유사도 최댓값)으로 고르지만
+        점수(float)만이 아니라 본문 전체를 돌려준다 — 검색 결과 관련도 설명(RAG
+        생성 단계)을 만들 때 이 단락 내용을 근거로 쓰기 위함이다. 대표 논문 선정
+        점수 계산에는 쓰지 않는다(그건 여전히 best_paragraph_similarity가 담당).
+        """
+
     def tables_of(self, paper_id: int) -> list[TableRow]:
         """엑셀 표 시트용: 논문에 속한 표 전체를 반환한다."""
+
+    def available_sections(self, paper_id: int) -> list[str]:
+        """이 논문에 실제로 존재하는 section_name 목록을, 문서에 처음 등장하는 순서대로 중복 없이 반환한다.
+
+        UI가 자유 텍스트 대신 실제 섹션 제목으로 드롭다운을 채우기 위한 조회다
+        (section_query처럼 필터링하지 않고 전체 후보를 보여줘야 하므로 별도 메서드로 둔다).
+        """
 
     def save_result(
         self,
@@ -456,6 +474,70 @@ class PostgresSearchRepository:
             )
             for row in rows
         ]
+
+    def top_matching_paragraph(
+        self, paper_id: int, vec: Sequence[float]
+    ) -> ParagraphRow | None:
+        # best_paragraph_similarity와 동일한 정렬 기준(코사인 거리)이지만 점수 대신
+        # 본문 전체 컬럼을 그대로 돌려준다 — 검색 결과 관련도 설명 생성의 근거 텍스트로 쓴다.
+        if not vec:
+            return None
+        statement = text(
+            """
+            SELECT
+                paragraph_id,
+                paper_id,
+                paragraph_order,
+                section_name,
+                original_text,
+                cleaned_text,
+                summary,
+                keywords
+            FROM paragraphs
+            WHERE paper_id = :paper_id
+              AND is_topic_relevant = true
+              AND embedding IS NOT NULL
+            ORDER BY embedding <=> CAST(:embedding AS vector)
+            LIMIT 1
+            """
+        )
+        with self.engine.begin() as connection:
+            row = connection.execute(
+                statement,
+                {"paper_id": paper_id, "embedding": _vector_literal(vec)},
+            ).mappings().first()
+        if row is None:
+            return None
+        return ParagraphRow(
+            paragraph_id=int(row["paragraph_id"]),
+            paper_id=int(row["paper_id"]),
+            paragraph_order=int(row["paragraph_order"]),
+            section_name=str(row["section_name"] or ""),
+            original_text=str(row["original_text"] or ""),
+            cleaned_text=str(row["cleaned_text"] or ""),
+            summary=str(row["summary"] or ""),
+            keywords=list(row["keywords"] or []),
+        )
+
+    def available_sections(self, paper_id: int) -> list[str]:
+        # section_name별 첫 등장 순서(MIN(paragraph_order))로 정렬해 중복 없는 섹션 제목
+        # 목록을 만든다 — section_query 필터와 달리 전체 후보를 보여줘야 하므로
+        # is_topic_relevant/section_name 조건 외에는 좁히지 않는다.
+        statement = text(
+            """
+            SELECT section_name
+            FROM paragraphs
+            WHERE paper_id = :paper_id
+              AND is_topic_relevant = true
+              AND section_name IS NOT NULL
+              AND section_name <> ''
+            GROUP BY section_name
+            ORDER BY MIN(paragraph_order) ASC
+            """
+        )
+        with self.engine.begin() as connection:
+            rows = connection.execute(statement, {"paper_id": paper_id}).mappings().all()
+        return [str(row["section_name"]) for row in rows]
 
     def tables_of(self, paper_id: int) -> list[TableRow]:
         statement = text(
@@ -901,6 +983,45 @@ class InMemorySearchRepository:
             )
             for row in rows
         ]
+
+    def top_matching_paragraph(
+        self, paper_id: int, vec: Sequence[float]
+    ) -> ParagraphRow | None:
+        paper_keywords = self.paper_keywords(paper_id)
+        candidates = [
+            row
+            for row in self.paragraph_rows
+            if int(row["paper_id"]) == paper_id
+            and row.get("is_topic_relevant", True)
+            and row.get("embedding") is not None
+        ]
+        if not vec or not candidates:
+            return None
+        best = max(candidates, key=lambda row: _cosine(vec, row["embedding"]))
+        return ParagraphRow(
+            paragraph_id=int(best["paragraph_id"]),
+            paper_id=int(best["paper_id"]),
+            paragraph_order=int(best["paragraph_order"]),
+            section_name=str(best.get("section_name") or ""),
+            original_text=str(best.get("original_text") or ""),
+            cleaned_text=str(best.get("cleaned_text") or ""),
+            summary=str(best.get("summary") or ""),
+            keywords=list(best.get("keywords") or paper_keywords),
+        )
+
+    def available_sections(self, paper_id: int) -> list[str]:
+        rows = [
+            row
+            for row in self.paragraph_rows
+            if int(row["paper_id"]) == paper_id
+            and row.get("is_topic_relevant", True)
+            and str(row.get("section_name") or "").strip()
+        ]
+        rows.sort(key=lambda row: (int(row["paragraph_order"]), int(row["paragraph_id"])))
+        seen: dict[str, None] = {}
+        for row in rows:
+            seen.setdefault(str(row["section_name"]), None)
+        return list(seen)
 
     def tables_of(self, paper_id: int) -> list[TableRow]:
         rows = [row for row in self.table_rows if int(row["paper_id"]) == paper_id]

@@ -55,10 +55,10 @@ class ApiClient:
         self,
         query: str,
         *,
-        use_llm: bool = False,
         section_query: str | None = None,
         include_related: bool = True,
         include_tables: bool = True,
+        include_abstract: bool = True,
     ) -> SearchMatched | SearchSuggest:
         """자연어 질의로 `POST /search`를 호출한다.
 
@@ -68,22 +68,24 @@ class ApiClient:
         `status` 값을 보고 두 스키마 중 어느 쪽으로 역직렬화할지만 결정하며, 실제 매칭
         로직은 API 서버 쪽에 있다.
 
-        기본(use_llm=False)은 서버가 LLM 없이 형태소 분석만으로 키워드를 뽑는 빠른
-        경로를 쓴다. use_llm=True면 자연어 이해를 위해 LLM을 호출하지만 훨씬 느리다
-        (직렬 처리라 동시 사용자가 있으면 대기 시간이 늘어난다). section_query를
-        주면 결과 단락을 그 섹션명을 포함하는 것만으로 좁힌다. include_related=False면
-        연관 논문 관련 항목·시트를, include_tables=False면 표 관련 시트를 아예
-        만들지 않는다(둘 다 기본은 True — 산출물 구성을 사용자가 좁히는 옵션).
+        키워드 추출은 항상 LLM(Ollama)으로 이뤄진다(직렬 처리라 지연이 있음 —
+        `docs/reports/assessments/2026-07-22-llm-search-capacity.md` 참고).
+        section_query를 주면 결과 단락을 그 섹션명을 포함하는 것만으로 좁힌다(응답의
+        `available_sections`가 실제 존재하는 섹션 제목 목록이므로, 다음 호출의
+        section_query는 그 목록에서 고른 값을 넣는 것을 가정한다). include_related=False면
+        연관 논문 관련 항목·시트를, include_tables=False면 표 관련 시트를,
+        include_abstract=False면 논문 정보 시트의 초록 칸을 아예 만들지/채우지 않는다
+        (셋 다 기본은 True — 산출물 구성을 사용자가 좁히는 옵션).
         """
         response = self._request(
             "POST",
             "/search",
             json={
                 "query": query,
-                "use_llm": use_llm,
                 "section_query": section_query,
                 "include_related": include_related,
                 "include_tables": include_tables,
+                "include_abstract": include_abstract,
             },
         )
         body = response.json()

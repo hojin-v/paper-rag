@@ -15,22 +15,22 @@ from pydantic import BaseModel, Field
 class SearchRequest(BaseModel):
     """POST /search 요청 바디.
 
-    query 외 나머지 필드는 전부 선택값이며 기본은 "빠르고 완전한 검색"이다:
-    use_llm=False면 Kiwi 형태소 분석 기반 키워드 추출만 쓰고 LLM을 호출하지
-    않는다(직렬화·지연 문제 회피). 자연어 의도를 더 잘 반영하고 싶을 때만
-    use_llm=True로 명시적으로 AI 경로를 요청한다. section_query를 지정하면
-    결과(엑셀 포함) 단락을 그 문자열을 포함하는 section_name으로만 좁힌다.
+    query 외 나머지 필드는 전부 선택값이다. 질의 키워드 추출은 항상 LLM(Ollama)로
+    이뤄진다 — 형태소 분석 빠른 경로는 사용자가 고르는 옵션이 아니라 LLM 실패
+    시의 내부 안전망일 뿐이다(SearchService.extract_keywords 참고). section_query를
+    지정하면 결과(엑셀 포함) 단락을 그 문자열을 포함하는 section_name으로만 좁힌다.
     include_related=False면 연관 논문 조회 자체를 생략하고 응답·엑셀에서
     연관 논문 관련 항목을 전부 제외한다. include_tables=False면 표 조회를
-    생략하고 엑셀에 표 시트를 만들지 않는다 — 둘 다 "필요 없는 산출물은
-    아예 만들지 않는다"는 사용자 맞춤 구성을 위한 것이다.
+    생략하고 엑셀에 표 시트를 만들지 않는다. include_abstract=False면
+    대표/연관 논문 정보 시트에서 초록 원문·초록 요약 칸을 비운다 — 셋 다
+    "필요 없는 산출물은 아예 만들지 않는다"는 사용자 맞춤 구성을 위한 것이다.
     """
 
     query: str = Field(min_length=1)
-    use_llm: bool = False
     section_query: str | None = None
     include_related: bool = True
     include_tables: bool = True
+    include_abstract: bool = True
 
 
 class KeywordCandidate(BaseModel):
@@ -50,7 +50,10 @@ class PaperSummary(BaseModel):
 
     score와 reason은 선정 근거를 그대로 노출하기 위한 필드로, 대표 논문이면
     가중합 점수식 계산 내역, 연관 논문이면 paper_relations.relation_score와
-    relation_reason(겹치는 키워드 등)이 담긴다.
+    relation_reason(겹치는 키워드 등)이 담긴다. relevance_summary는 이와 별개로
+    LLM이 생성하는 자연어 설명(RAG 생성 단계) — 이 논문에서 질의와 가장 유사한
+    단락 1개를 근거로 "왜 이 논문인가"를 사람이 읽을 문장으로 답한다. reason이
+    "점수가 어떻게 계산됐는지"라면 relevance_summary는 "내용상 왜 관련 있는지"다.
     """
 
     paper_id: int
@@ -62,6 +65,7 @@ class PaperSummary(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     score: float
     reason: str
+    relevance_summary: str | None = None
 
 
 class SearchMatched(BaseModel):
@@ -69,6 +73,11 @@ class SearchMatched(BaseModel):
 
     match_type으로 "정확 매칭(exact)"인지 "유사 키워드 선택 후 확정(selected)"인지
     구분하고, result_id는 이후 GET /result/{result_id}/excel 다운로드에 사용한다.
+    available_sections는 대표(+연관) 논문에 실제로 존재하는 section_name을
+    문서 등장 순서로 중복 없이 합친 목록이다 — 사용자가 다음 검색에서
+    section_query를 자유 텍스트가 아니라 이 목록에서 골라 넣을 수 있게 하기 위한
+    것으로, 대표 논문 선정 결과 자체와는 무관하다(현재 산출물 구성 기준으로
+    "어떤 섹션이 있는지"만 알려준다).
     """
 
     status: Literal["matched"] = "matched"
@@ -79,6 +88,7 @@ class SearchMatched(BaseModel):
     result_id: str
     primary_paper: PaperSummary
     related_paper: PaperSummary | None = None
+    available_sections: list[str] = Field(default_factory=list)
 
 
 class SearchSuggest(BaseModel):
@@ -166,7 +176,8 @@ class ResultBundle(BaseModel):
     build_excel이 연관 논문 시트(정보/섹션/단락)와 표 시트(표 데이터/표 셀)를
     아예 만들지 말지를 결정하는 플래그다 — related_info가 우연히 None인
     경우(연관 논문이 없어서)와는 별개로, 사용자가 명시적으로 "필요 없음"을
-    선택했을 때를 나타낸다.
+    선택했을 때를 나타낸다. include_abstract=False면 primary_info/related_info의
+    초록 원문·초록 요약 필드를 비워서 넘긴다(시트 자체는 유지, 해당 칸만 공백).
     """
 
     result_id: str
@@ -186,4 +197,5 @@ class ResultBundle(BaseModel):
     tables: list[TableInfo] = Field(default_factory=list)
     include_related: bool = True
     include_tables: bool = True
+    include_abstract: bool = True
     created_at: datetime

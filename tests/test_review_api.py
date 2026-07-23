@@ -152,6 +152,54 @@ def test_job_status_reports_celery_states(
         assert body[expected_key] == celery_result
 
 
+def test_llm_calls_viewer_renders_and_forwards_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_fetch(engine: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        captured.update(kwargs)
+        return [
+            {
+                "id": 1,
+                "created_at": "2026-07-23T10:00:00+00:00",
+                "operation": "paragraph_enrich",
+                "model": "qwen2.5:7b-instruct-q4_K_M",
+                "prompt": "요약해줘",
+                "response": '{"summary":"ok"}',
+                "success": True,
+                "error": None,
+                "latency_ms": 123.0,
+                "cache_hit": False,
+                "prompt_tokens": 10,
+                "completion_tokens": 20,
+                "context": None,
+            }
+        ]
+
+    monkeypatch.setattr("paperrag.review.api.fetch_llm_calls", fake_fetch)
+
+    response = _request(
+        "GET",
+        "/observability/llm-calls",
+        params={"operation": "paragraph_enrich", "success": "true", "limit": "50"},
+    )
+
+    assert response.status_code == 200
+    assert "paragraph_enrich" in response.text
+    assert "성공" in response.text
+    assert captured == {"operation": "paragraph_enrich", "success": True, "limit": 50}
+
+
+def test_llm_calls_viewer_handles_empty_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("paperrag.review.api.fetch_llm_calls", lambda engine, **kwargs: [])
+
+    response = _request("GET", "/observability/llm-calls")
+
+    assert response.status_code == 200
+    assert "기록된 호출이 없습니다" in response.text
+
+
 def _request(method: str, path: str, **kwargs: object) -> httpx.Response:
     async def run() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)

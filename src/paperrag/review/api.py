@@ -18,6 +18,9 @@ from starlette.concurrency import run_in_threadpool
 
 from paperrag.auth import require_api_key
 from paperrag.config import get_settings
+from paperrag.db import get_engine
+from paperrag.observability.store import fetch_llm_calls
+from paperrag.observability.viewer import build_llm_calls_viewer_html
 from paperrag.review.models import (
     BlockCreate,
     BlockUpdate,
@@ -373,4 +376,24 @@ async def export_training_data(
         content=content,
         media_type="application/zip",
         headers={"content-disposition": 'attachment; filename="paperrag-training-data.zip"'},
+    )
+
+
+@router.get("/observability/llm-calls", response_class=HTMLResponse)
+async def view_llm_calls(
+    operation: str | None = Query(default=None),
+    success: bool | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> str:
+    """최근 LLM 호출(프롬프트/응답/지연시간/토큰/성공여부) 목록을 보여주는 읽기 전용 뷰어.
+
+    라우터 전체에 걸린 `require_api_key`를 그대로 물려받아 별도 인증을 새로
+    만들지 않는다. 무거운 연산이 아니라 스레드풀로 감쌀 필요가 없다.
+    """
+    settings = get_settings()
+    calls = fetch_llm_calls(
+        get_engine(settings), operation=operation, success=success, limit=limit
+    )
+    return build_llm_calls_viewer_html(
+        calls, operation_filter=operation, success_filter=success, limit=limit
     )

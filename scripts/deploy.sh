@@ -28,12 +28,30 @@ log() { printf '\033[1;34m[deploy]\033[0m %s\n' "$*"; }
 cd "$DEPLOY_DIR"
 mkdir -p "$STATE_DIR"
 
+# DEPLOY_DIR가 곧 개발자의 작업 디렉터리이기도 하므로(온프레미스 단일 서버), 아래
+# PAPERRAG_DEPLOY_REF 체크아웃이 HEAD를 분리(detached)시킨 채로 끝나면 안 된다 —
+# 스크립트 종료 시 원래 브랜치로 반드시 되돌린다(성공/실패 어느 경로든, 이미
+# docker compose build가 이미지를 다 만든 뒤라 작업 디렉터리를 되돌려도 무해하다).
+ORIGINAL_REF="$(git symbolic-ref --quiet --short HEAD || true)"
+restore_original_ref() {
+  if [ -n "${PAPERRAG_DEPLOY_REF:-}" ] && [ -n "$ORIGINAL_REF" ]; then
+    git checkout --quiet "$ORIGINAL_REF" 2>/dev/null || true
+  fi
+}
+trap restore_original_ref EXIT
+
 # CD에서 PAPERRAG_DEPLOY_REF(배포할 커밋 SHA)를 주면 정식 디렉터리를 그 커밋으로 맞춘다.
 # 수동 실행 시에는 생략하고 현재 체크아웃된 HEAD를 그대로 배포한다.
 if [ -n "${PAPERRAG_DEPLOY_REF:-}" ]; then
   log "커밋 동기화: $PAPERRAG_DEPLOY_REF"
   git fetch --quiet origin
-  git checkout --quiet --force "$PAPERRAG_DEPLOY_REF"
+  # --force로 체크아웃하면 이 디렉터리에서 작업 중인 미커밋 변경을 조용히 버린다
+  # (실제로 한 번 겪음). 지우지 않고 stash로 보존한 뒤 진행한다.
+  if [ -n "$(git status --porcelain)" ]; then
+    log "경고: 미커밋 변경을 stash에 보존합니다 — 배포 후 'git stash list'에서 확인하세요"
+    git stash push --include-untracked --quiet -m "deploy.sh 자동 stash (배포 대상: $PAPERRAG_DEPLOY_REF)"
+  fi
+  git checkout --quiet "$PAPERRAG_DEPLOY_REF"
 fi
 
 SHA="$(git rev-parse --short HEAD)"

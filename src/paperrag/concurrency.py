@@ -33,7 +33,7 @@ class HeavyTaskBusyError(RuntimeError):
     """세마포어 대기 시간 안에 토큰을 얻지 못했을 때(=무거운 작업 슬롯이 이미 전부 사용 중)."""
 
 
-def _redis_client(settings: Settings) -> Any | None:
+def _redis_client(settings: Settings, *, socket_timeout: float = 5) -> Any | None:
     """redis 패키지가 없거나 연결에 실패하면 None을 반환한다(가용성 우선 원칙)."""
     try:
         import redis
@@ -41,7 +41,7 @@ def _redis_client(settings: Settings) -> Any | None:
         return None
     try:
         client = redis.Redis.from_url(
-            settings.redis_url, socket_connect_timeout=2, socket_timeout=5
+            settings.redis_url, socket_connect_timeout=2, socket_timeout=socket_timeout
         )
         client.ping()
     except Exception:
@@ -79,7 +79,16 @@ def heavy_task_slot(
         yield
         return
 
-    client = _redis_client(active_settings)
+    wait = (
+        active_settings.heavy_task_semaphore_wait_seconds
+        if timeout_seconds is None
+        else timeout_seconds
+    )
+    # BLPOP 자체가 최대 wait초까지 응답 없이 블로킹한다. 클라이언트 소켓 타임아웃이
+    # 그보다 짧으면 BLPOP의 nil 응답(→ 아래 HeavyTaskBusyError)보다 먼저 소켓 read가
+    # 타임아웃 나 redis.exceptions.TimeoutError가 그대로 새어나간다 — 기본 5초 타임아웃과
+    # 기본 60초 대기가 어긋나 실기동에서 재현됨(2026-07-23, 슬롯이 이미 차 있을 때).
+    client = _redis_client(active_settings, socket_timeout=wait + 5)
     if client is None:
         # Redis를 못 쓰면 제한 자체를 포기하고 통과시킨다 — 이 세마포어가 없어서
         # OCR/LLM 파이프라인 전체가 막히는 것은 이 최적화의 목적과 어긋난다.
@@ -87,11 +96,6 @@ def heavy_task_slot(
         return
 
     _ensure_seeded(client, active_settings)
-    wait = (
-        active_settings.heavy_task_semaphore_wait_seconds
-        if timeout_seconds is None
-        else timeout_seconds
-    )
     token = client.blpop(_TOKEN_KEY, timeout=wait)
     if token is None:
         raise HeavyTaskBusyError(

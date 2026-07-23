@@ -29,6 +29,7 @@ approved 처리 → OCR 실행 → `_automation_quality`로 품질 재판정 →
 from __future__ import annotations
 
 import json
+import logging
 import multiprocessing
 import queue
 import re
@@ -57,6 +58,8 @@ from paperrag.review.models import (
     ReviewPage,
 )
 from paperrag.review.store import PostgresReviewStore, ReviewStore
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_BACKENDS = {"auto", "simple", "docling", "paddle"}
 
@@ -334,7 +337,6 @@ class ReviewService:
                         "ocr_text": recognized.text,
                         "corrected_text": None,
                         "ocr_engine": recognized.ocr_engine,
-                        "block_type": recognized.block_type,
                         "review_status": "unreviewed",
                     }
                 )
@@ -547,6 +549,7 @@ class ReviewService:
         """
         settings_payload = self.settings.model_dump(mode="python")
         blocks_payload = [block.model_dump(mode="python") for block in blocks]
+        logger.info("Paddle %s 실행 시작 (pdf_path=%s)", operation, pdf_path)
 
         if multiprocessing.current_process().daemon:
             with heavy_task_slot(self.settings):
@@ -556,7 +559,9 @@ class ReviewService:
                 )
                 status, payload = inline_queue.get_nowait()
             if status != "ok":
+                logger.error("Paddle %s 실패 (pdf_path=%s): %s", operation, pdf_path, payload)
                 raise RuntimeError(str(payload))
+            logger.info("Paddle %s 완료 (pdf_path=%s)", operation, pdf_path)
             return DocumentLayout.model_validate(payload)
 
         with heavy_task_slot(self.settings):
@@ -574,6 +579,12 @@ class ReviewService:
             except queue.Empty as exc:
                 process.terminate()
                 process.join(10)
+                logger.error(
+                    "Paddle %s 시간 초과 (pdf_path=%s, timeout=%.0fs)",
+                    operation,
+                    pdf_path,
+                    self.settings.paddle_worker_timeout_seconds,
+                )
                 raise TimeoutError(
                     f"Paddle {operation} 작업이 제한 시간을 초과했습니다."
                 ) from exc
@@ -584,7 +595,9 @@ class ReviewService:
                 process.terminate()
                 process.join(10)
         if status != "ok":
+            logger.error("Paddle %s 실패 (pdf_path=%s): %s", operation, pdf_path, payload)
             raise RuntimeError(str(payload))
+        logger.info("Paddle %s 완료 (pdf_path=%s)", operation, pdf_path)
         return DocumentLayout.model_validate(payload)
 
     def _automation_quality(self, document: ReviewDocument) -> AutomationQuality:

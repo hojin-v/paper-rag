@@ -9,6 +9,7 @@ IngestPipeline.run()이 source check(1) -> layout(2) -> filter(3) -> paragraph(4
 운영 공백을 메운 조치, docs/reports/assessments/2026-07-12-two-paper-ocr-evaluation.md).
 """
 
+import logging
 import re
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -38,6 +39,8 @@ from paperrag.ingest.models import (
 from paperrag.ingest.paragraphs import build_paragraphs
 from paperrag.ingest.relations import build_relations
 from paperrag.ingest.repository import IngestRepository, ParagraphRecord
+
+logger = logging.getLogger(__name__)
 
 # processing_jobs.stage에 기록되는 단계 이름. docs/guide/04-ingest-pipeline.md
 # 7단계 표의 STEP 이름과 그대로 맞춘다.
@@ -124,15 +127,18 @@ class IngestPipeline:
             # 단계 실행 전 running, 성공 시 done, 예외 시 failed를 processing_jobs에
             # 기록한 뒤 예외를 다시 던져 run() 바깥의 보상 삭제 로직으로 넘긴다.
             nonlocal paper_id
+            logger.info("%s 시작 (paper_id=%s, path=%s)", name, paper_id, path)
             self.repo.set_job_stage(paper_id, name, "running")
             try:
                 result, count = action()
             except Exception as exc:
                 self.repo.set_job_stage(paper_id, name, "failed", str(exc))
                 report.record_stage(name, success=False, error=str(exc))
+                logger.exception("%s 실패 (paper_id=%s, path=%s)", name, paper_id, path)
                 raise
             self.repo.set_job_stage(paper_id, name, "done")
             report.record_stage(name, success=True, count=count)
+            logger.info("%s 완료 (paper_id=%s, count=%d)", name, paper_id, count)
             return result
 
         stage(STAGE_1, lambda: (self._validate_pdf_source(path), 1))

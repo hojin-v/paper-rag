@@ -19,10 +19,15 @@ from typing import Any
 import httpx
 
 from paperrag.config import get_settings
+from paperrag.logging_config import configure_logging
 from paperrag.review.models import ReviewBlock, ReviewDocument
 from paperrag.review.viewer import BLOCK_LABELS
 from paperrag.search.schemas import KeywordCandidate, PaperSummary, SearchMatched, SearchSuggest
 from paperrag.ui.client import ApiClient, ApiUnavailable
+
+# Streamlit은 상호작용마다 이 스크립트를 처음부터 재실행하므로, configure_logging의
+# idempotent 가드가 중복 핸들러 등록을 막아준다.
+configure_logging(get_settings())
 
 
 @dataclass(frozen=True, slots=True)

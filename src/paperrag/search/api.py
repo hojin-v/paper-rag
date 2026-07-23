@@ -17,6 +17,7 @@ search.service.SearchService에, DB 접근은 search.repository에 있다.
 `paperrag.auth.require_api_key`로 보호한다(PAPERRAG_API_KEY 미설정 시 통과).
 """
 
+import logging
 import os
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -26,6 +27,7 @@ from starlette.types import Receive, Scope, Send
 
 from paperrag.auth import require_api_key
 from paperrag.config import get_settings
+from paperrag.logging_config import configure_logging
 from paperrag.review.api import router as review_router
 from paperrag.readiness import build_readiness_report
 from paperrag.search.repository import PostgresSearchRepository
@@ -36,6 +38,9 @@ from paperrag.search.service import (
     SearchService,
     SearchSessionNotFound,
 )
+
+configure_logging(get_settings())
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Paper RAG Search API")
 app.include_router(review_router)
@@ -143,6 +148,7 @@ async def search(
     except SearchNoPaperFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except SearchDependencyError as exc:
+        logger.error("검색 의존성 오류: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
@@ -171,6 +177,7 @@ async def select(
     except SearchNoPaperFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except SearchDependencyError as exc:
+        logger.error("검색 의존성 오류: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 

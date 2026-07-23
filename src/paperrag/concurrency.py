@@ -19,11 +19,14 @@ Celery worker(별도 프로세스, 여러 개일 수 있음)와는 자원을 공
 후 거부되는 방향으로만 영향을 준다 — 조용히 정합성이 깨지는 종류의 버그는 아니다).
 """
 
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
 from paperrag.config import Settings, get_settings
+
+logger = logging.getLogger(__name__)
 
 _TOKEN_KEY = "paperrag:heavy_task_tokens"
 _INIT_MARKER_KEY = f"{_TOKEN_KEY}:initialized"
@@ -92,12 +95,18 @@ def heavy_task_slot(
     if client is None:
         # Redis를 못 쓰면 제한 자체를 포기하고 통과시킨다 — 이 세마포어가 없어서
         # OCR/LLM 파이프라인 전체가 막히는 것은 이 최적화의 목적과 어긋난다.
+        logger.warning("Redis에 연결할 수 없어 무거운 작업 동시성 제한을 건너뜁니다.")
         yield
         return
 
     _ensure_seeded(client, active_settings)
     token = client.blpop(_TOKEN_KEY, timeout=wait)
     if token is None:
+        logger.warning(
+            "무거운 작업 슬롯 %d개가 모두 사용 중이라 %.0f초 대기 후 포기했습니다.",
+            active_settings.heavy_task_max_concurrency,
+            wait,
+        )
         raise HeavyTaskBusyError(
             f"{active_settings.heavy_task_max_concurrency}개의 동시 작업 슬롯이 모두 "
             "사용 중입니다. 잠시 후 다시 시도하세요."

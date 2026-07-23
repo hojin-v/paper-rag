@@ -8,6 +8,7 @@
 `run_in_threadpool`로 감싸 FastAPI의 비동기 이벤트 루프를 막지 않게 한다.
 """
 
+import logging
 from functools import lru_cache
 from typing import Annotated
 
@@ -34,6 +35,7 @@ from paperrag.review.viewer import build_viewer_html
 # PAPERRAG_API_KEY가 설정되지 않은 기본 상태에서는 require_api_key가 즉시
 # 통과시키므로 로컬 개발 흐름에는 영향이 없다.
 router = APIRouter(tags=["document-review"], dependencies=[Depends(require_api_key)])
+logger = logging.getLogger(__name__)
 
 
 @lru_cache
@@ -69,6 +71,7 @@ async def upload_document(
     except ImportError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
+        logger.exception("문서 업로드/레이아웃 분석 실패 (filename=%s)", filename)
         raise HTTPException(status_code=503, detail=f"레이아웃/OCR 분석 실패: {exc}") from exc
 
 
@@ -207,6 +210,7 @@ async def run_reviewed_ocr(document_id: str, service: ReviewDependency) -> Revie
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
+        logger.exception("영역별 OCR 실패 (document_id=%s)", document_id)
         raise HTTPException(status_code=503, detail=f"영역별 OCR 실패: {exc}") from exc
 
 
@@ -224,6 +228,7 @@ async def run_automatic_ocr(document_id: str, service: ReviewDependency) -> Revi
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
+        logger.exception("자동 영역별 OCR 실패 (document_id=%s)", document_id)
         raise HTTPException(status_code=503, detail=f"자동 영역별 OCR 실패: {exc}") from exc
 
 
@@ -346,6 +351,7 @@ async def ingest_document(document_id: str, service: ReviewDependency) -> Ingest
     except DocumentNotFoundError as exc:
         raise HTTPException(status_code=404, detail="document not found") from exc
     except Exception as exc:
+        logger.exception("문서 적재 실패 (document_id=%s)", document_id)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 

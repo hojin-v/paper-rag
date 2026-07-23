@@ -7,15 +7,19 @@ Celery worker 앱 정의.
 (docs/guide/02-stack.md의 `worker` profile 참고).
 """
 
+import logging
 from typing import Any
 
 from celery import Celery
 
 from paperrag.config import get_settings
+from paperrag.logging_config import configure_logging
 
 # 모듈 임포트 시점에 한 번만 설정을 읽는다 — worker 프로세스는 태스크마다 재시작되지 않으므로
 # 태스크 실행 중 설정이 바뀔 걱정 없이 모듈 전역으로 캐시해도 안전하다.
 settings = get_settings()
+configure_logging(settings)
+logger = logging.getLogger(__name__)
 app = Celery(
     "paperrag",
     broker=settings.celery_broker_url,
@@ -44,7 +48,9 @@ def ingest_review_document(document_id: str) -> dict[str, Any]:
     """
     from paperrag.review.service import ReviewService
 
+    logger.info("문서 적재 시작 (document_id=%s)", document_id)
     result = ReviewService(settings).ingest(document_id)
+    logger.info("문서 적재 완료 (document_id=%s)", document_id)
     return result.model_dump(mode="json")
 
 
@@ -72,6 +78,7 @@ def ingest_collected_paper(source_path: str) -> dict[str, Any]:
     # 저널명·원문 링크는 PDF에서 뽑히지 않으므로 수집 manifest(OpenAlex 메타)에서 찾아
     # papers.journal/full_text_link에 채운다. manifest가 없거나 매칭 실패 시 (None, None)이라
     # 적재는 그대로 진행된다(best effort).
+    logger.info("수집 논문 적재 시작 (source_path=%s)", source_path)
     journal, full_text_link = lookup_source_metadata(source_path, settings)
     pipeline = IngestPipeline(
         PostgresIngestRepository(settings),
@@ -81,6 +88,7 @@ def ingest_collected_paper(source_path: str) -> dict[str, Any]:
         settings=settings,
     )
     report = pipeline.run(source_path, journal=journal, full_text_link=full_text_link)
+    logger.info("수집 논문 적재 완료 (source_path=%s, paper_id=%s)", source_path, report.paper_id)
     return report.model_dump(mode="json")
 
 
@@ -96,7 +104,9 @@ def run_automatic_ocr_task(document_id: str) -> dict[str, Any]:
     """
     from paperrag.review.service import ReviewService
 
+    logger.info("자동 영역별 OCR 시작 (document_id=%s)", document_id)
     result = ReviewService(settings).run_automatic_ocr(document_id)
+    logger.info("자동 영역별 OCR 완료 (document_id=%s, phase=%s)", document_id, result.phase)
     return result.model_dump(mode="json")
 
 
@@ -110,5 +120,7 @@ def run_reviewed_ocr_task(document_id: str) -> dict[str, Any]:
     """
     from paperrag.review.service import ReviewService
 
+    logger.info("영역별 OCR 시작 (document_id=%s)", document_id)
     result = ReviewService(settings).run_reviewed_ocr(document_id)
+    logger.info("영역별 OCR 완료 (document_id=%s, phase=%s)", document_id, result.phase)
     return result.model_dump(mode="json")

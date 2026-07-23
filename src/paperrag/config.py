@@ -221,6 +221,8 @@ class Settings(BaseSettings):
     # 별도 필드로 분리되어 있다(예: 엑셀 다운로드 링크 생성 시 사용).
     public_api_base_url: str = "http://localhost:8000"
     api_timeout_seconds: int = 1800
+    # paperrag.logging_config.configure_logging()이 읽는 루트 로거 레벨. 표준 logging
+    # 레벨 이름(DEBUG/INFO/WARNING/ERROR)만 유효하다.
     log_level: str = "INFO"
     # 검수/검색 API 공유 비밀키. None(기본값)이면 인증을 검사하지 않는다(로컬 개발용).
     # 값을 설정하면 X-API-Key 헤더 또는 api_key 쿼리 파라미터가 이 값과 일치해야

@@ -17,6 +17,9 @@ from pydantic import BaseModel
 
 from paperrag.config import Settings, get_settings
 from paperrag.embed.encoder import Encoder, get_encoder
+from paperrag.logging_config import configure_logging
+
+configure_logging(get_settings())
 
 
 class EmbedRequest(BaseModel):

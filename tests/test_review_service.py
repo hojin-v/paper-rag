@@ -306,6 +306,62 @@ def test_staged_layout_then_region_ocr_review(
     assert automatic.automation_quality.tables_structured == 1
 
 
+def test_run_reviewed_ocr_preserves_human_corrected_block_type(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OCR 백엔드(recognize_layout)가 block_type을 다르게 돌려줘도(예: Paddle의
+    _normalize_semantic_block_types가 위치 휴리스틱으로 재분류), 사람이 레이아웃
+    검수에서 직접 확정한 block_type을 덮어써서는 안 된다. 2026-07-23 실 데이터에서
+    사람이 "abstract"로 교정한 블록이 OCR 실행 후 조용히 "text"로 되돌아가는 형태로
+    재현됐다 — run_reviewed_ocr가 recognized.block_type을 ReviewBlock에 그대로
+    복사해 쓰던 것이 원인이었다."""
+
+    class ReclassifyingBackend:
+        def analyze_layout(self, pdf_path: str) -> DocumentLayout:
+            return DocumentLayout(
+                source_path=pdf_path,
+                is_scanned=True,
+                blocks=[
+                    LayoutBlock(
+                        page=1,
+                        block_type="text",
+                        text="",
+                        order=0,
+                        bbox=(35, 35, 360, 75),
+                        confidence=0.9,
+                    ),
+                ],
+            )
+
+        def recognize_layout(
+            self, pdf_path: str, blocks: list[LayoutBlock]
+        ) -> DocumentLayout:
+            # 실제 _normalize_semantic_block_types처럼, 사람이 확정한 block_type을
+            # 무시하고 다른 값으로 재분류해 돌려준다.
+            recognized = [
+                block.model_copy(update={"text": "본문 텍스트", "block_type": "text"})
+                for block in blocks
+            ]
+            return DocumentLayout(source_path=pdf_path, is_scanned=True, blocks=recognized)
+
+    monkeypatch.setattr(
+        "paperrag.review.service.get_backend", lambda name: ReclassifyingBackend()
+    )
+    service = _service(
+        Settings(_env_file=None, review_dir=tmp_path / "review", paddle_isolate_process=False)
+    )
+    document = service.upload("staged.pdf", _pdf_bytes(), backend="paddle")
+    block_id = document.blocks[0].block_id
+
+    service.update_block(document.document_id, block_id, BlockUpdate(block_type="abstract"))
+    service.approve_all(document.document_id)
+
+    ocr_document = service.run_reviewed_ocr(document.document_id)
+
+    assert ocr_document.blocks[0].block_type == "abstract"
+    assert ocr_document.blocks[0].ocr_text == "본문 텍스트"
+
+
 def _pdf_bytes() -> bytes:
     return (
         PdfBuilder()

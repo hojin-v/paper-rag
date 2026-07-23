@@ -60,6 +60,10 @@ worker = [
 ui = [
     "streamlit",
 ]
+eval = [
+    "jiwer",   # CER/WER 계산 표준 라이브러리(MIT)
+    "apted",   # 트리 편집거리(MIT) — TEDS 알고리즘의 핵심 연산
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/paperrag"]

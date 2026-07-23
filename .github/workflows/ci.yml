@@ -29,7 +29,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --extra-index-url https://download.pytorch.org/whl/cpu torch==2.8.0+cpu
-          pip install -e ".[dev,ingest,embed,worker,ui]" -c requirements-lock.txt
+          pip install -e ".[dev,ingest,embed,worker,ui,eval]" -c requirements-lock.txt
           pip install pgserver
 
       - name: Lint (ruff)

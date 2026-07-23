@@ -314,3 +314,32 @@ def _pdf_bytes() -> bytes:
         .text(40, 100, "This paragraph is extracted for OCR review.", fontsize=11)
         .build()
     )
+
+
+def test_run_isolated_paddle_runs_inline_inside_daemonic_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Celery prefork 워커(데몬 프로세스) 안에서는 추가 spawn 없이 같은 프로세스에서
+    실행돼야 한다 — spawn을 시도하면 "daemonic processes are not allowed to have
+    children"으로 즉시 실패한다(2026-07-23 async OCR 실기동 중 재현)."""
+    service = _service(
+        Settings(_env_file=None, review_dir=tmp_path / "review", paddle_isolate_process=True)
+    )
+
+    class FakeDaemonProcess:
+        daemon = True
+
+    monkeypatch.setattr(
+        "paperrag.review.service.multiprocessing.current_process",
+        lambda: FakeDaemonProcess(),
+    )
+
+    def fake_worker(operation, settings_payload, pdf_path, blocks_payload, result_queue):
+        layout = DocumentLayout(source_path=pdf_path, blocks=[], is_scanned=False)
+        result_queue.put(("ok", layout.model_dump(mode="python")))
+
+    monkeypatch.setattr("paperrag.review.service._paddle_stage_worker", fake_worker)
+
+    layout = service._run_isolated_paddle("layout", "dummy.pdf", [])
+
+    assert layout.source_path == "dummy.pdf"

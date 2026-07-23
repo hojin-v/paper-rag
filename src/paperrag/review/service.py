@@ -537,19 +537,34 @@ class ReviewService:
         `concurrency.heavy_task_slot`로 감싸, LLM 호출과 같은 자원 풀을 공유하는
         동시 실행 개수 제한을 받는다(2026-07-12 실측: 둘이 동시에 상주하면 swap이
         가득 참).
+
+        Celery의 prefork 워커 프로세스는 그 자체가 데몬 프로세스라 Python
+        multiprocessing 제약상 자식 프로세스를 만들 수 없다("daemonic processes are
+        not allowed to have children" — 2026-07-23 async OCR 경로 실기동 중 재현).
+        이미 API와 분리된 워커 컨테이너 안에서 호출된 경우이므로 이 함수의 격리
+        목적(API 프로세스 메모리/스레드 보호)은 그 자체로 충족돼 있어, 그럴 땐 추가로
+        스폰하지 않고 같은 프로세스에서 직접 실행한다.
         """
+        settings_payload = self.settings.model_dump(mode="python")
+        blocks_payload = [block.model_dump(mode="python") for block in blocks]
+
+        if multiprocessing.current_process().daemon:
+            with heavy_task_slot(self.settings):
+                inline_queue: queue.Queue = queue.Queue()
+                _paddle_stage_worker(
+                    operation, settings_payload, pdf_path, blocks_payload, inline_queue
+                )
+                status, payload = inline_queue.get_nowait()
+            if status != "ok":
+                raise RuntimeError(str(payload))
+            return DocumentLayout.model_validate(payload)
+
         with heavy_task_slot(self.settings):
             context = multiprocessing.get_context("spawn")
             result_queue = context.Queue()
             process = context.Process(
                 target=_paddle_stage_worker,
-                args=(
-                    operation,
-                    self.settings.model_dump(mode="python"),
-                    pdf_path,
-                    [block.model_dump(mode="python") for block in blocks],
-                    result_queue,
-                ),
+                args=(operation, settings_payload, pdf_path, blocks_payload, result_queue),
             )
             process.start()
             try:

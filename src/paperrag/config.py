@@ -238,6 +238,10 @@ class Settings(BaseSettings):
     # 너무 짧으면 잠깐 몰린 정상 요청까지 거부하고, 너무 길면 사용자가 오래 매달리게
     # 되므로 실측된 LLM 단일 호출 시간(수십 초)을 감안해 60초를 기본값으로 잡았다.
     heavy_task_semaphore_wait_seconds: float = 60.0
+    # true면 LLM 호출(프롬프트/응답/지연시간/토큰 등)을 llm_calls 테이블에 기록한다
+    # (paperrag.observability.store.record_llm_call). 운영 디버깅·품질 추적용이며,
+    # false면 기록을 건너뛴다(저장공간/쓰기 부하가 걱정될 때의 탈출구).
+    llm_observability_enabled: bool = True
 
 
 @lru_cache

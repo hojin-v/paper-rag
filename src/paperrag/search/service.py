@@ -235,7 +235,9 @@ class SearchService:
         """
         prompt = QUERY_KEYWORDS_PROMPT.format(query=query)
         try:
-            data = self.llm.generate_json(prompt, QUERY_KEYWORDS_SCHEMA_HINT)
+            data = self.llm.generate_json(
+                prompt, QUERY_KEYWORDS_SCHEMA_HINT, operation="query_keywords"
+            )
             keywords = _clean_keywords(data.get("keywords", []))
         except Exception as exc:
             if not self.settings.allow_degraded_results:
@@ -561,7 +563,11 @@ class SearchService:
         )
         prompt += "\n" + KOREAN_OUTPUT_RULE
         try:
-            data = _coerce_json_dict(self.llm.generate_json(prompt, RELEVANCE_SCHEMA_HINT))
+            data = _coerce_json_dict(
+                self.llm.generate_json(
+                    prompt, RELEVANCE_SCHEMA_HINT, operation="relevance_explanation"
+                )
+            )
             summary = str(data.get("summary", "")).strip()
             _validate_korean_output(self.llm, summary)
             if summary:

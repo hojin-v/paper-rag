@@ -15,7 +15,7 @@ class FakeLLM:
         self.responses = list(responses or [])
         self.prompts: list[str] = []
 
-    def generate_json(self, prompt: str, schema_hint: str) -> dict[str, Any]:
+    def generate_json(self, prompt: str, schema_hint: str, operation: str = "") -> dict[str, Any]:
         self.prompts.append(prompt)
         if self.responses:
             return self.responses.pop(0)
@@ -28,7 +28,7 @@ class RaisingLLM:
     (예: 캐시 히트 경로, 이미 생성된 relevance_summary 재사용 경로).
     """
 
-    def generate_json(self, prompt: str, schema_hint: str) -> dict[str, Any]:
+    def generate_json(self, prompt: str, schema_hint: str, operation: str = "") -> dict[str, Any]:
         raise AssertionError("이 경로는 LLM을 호출하면 안 된다.")
 
 

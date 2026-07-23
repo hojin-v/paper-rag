@@ -85,7 +85,7 @@ class E2EContext:
 
 
 class ScriptedLLM(LLMClient):
-    def generate_json(self, prompt: str, schema_hint: str) -> dict[str, Any]:
+    def generate_json(self, prompt: str, schema_hint: str, operation: str = "") -> dict[str, Any]:
         if "사용자의 자연어 질의" in prompt:
             if "이상탐지" in prompt:
                 return {"keywords": ["스마트팩토리", "이상탐지"]}

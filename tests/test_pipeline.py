@@ -56,7 +56,9 @@ class FailingLlmClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def generate_json(self, prompt: str, schema_hint: str) -> dict[str, object]:
+    def generate_json(
+        self, prompt: str, schema_hint: str, operation: str = ""
+    ) -> dict[str, object]:
         raise RuntimeError("injected LLM failure")
 
 

@@ -20,7 +20,9 @@ docs/reports/benchmarks/2026-07-04-llm-cpu.md에서 실측 확인됐다: 7B 모�
 
 import hashlib
 import json
+import logging
 import re
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Protocol
@@ -29,7 +31,11 @@ import httpx
 
 from paperrag.concurrency import heavy_task_slot
 from paperrag.config import Settings, get_settings
+from paperrag.db import get_engine
 from paperrag.ingest.models import EnrichedParagraph
+from paperrag.observability.store import record_llm_call
+
+logger = logging.getLogger(__name__)
 
 # LLM 요약/키워드 출력에서 한자·중국어 문자를 탐지하는 정규식. 2026-07-12 실측에서
 # Qwen2.5 7B 출력에 중국어·벵골어가 섞이는 언어 오염이 확인되어 검증에 사용한다.
@@ -120,8 +126,14 @@ ABSTRACT_PROMPT_TEMPLATE = """
 
 
 class LLMClient(Protocol):
-    def generate_json(self, prompt: str, schema_hint: str) -> dict[str, Any]:
-        """Generate JSON matching the schema hint."""
+    def generate_json(
+        self, prompt: str, schema_hint: str, operation: str = ""
+    ) -> dict[str, Any]:
+        """Generate JSON matching the schema hint.
+
+        `operation`은 관찰 기록(llm_calls.operation)에 붙는 라벨로, 어떤 기능이
+        이 호출을 했는지 구분하는 용도다(예: "paragraph_enrich", "query_keywords").
+        """
 
 
 class LLMOutputError(RuntimeError):
@@ -140,7 +152,9 @@ class OllamaClient:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def generate_json(self, prompt: str, schema_hint: str) -> dict[str, Any]:
+    def generate_json(
+        self, prompt: str, schema_hint: str, operation: str = ""
+    ) -> dict[str, Any]:
         """캐시를 먼저 확인하고 없으면 Ollama에 호출해 JSON 딕셔너리를 반환한다.
 
         timeout은 Settings.llm_timeout_seconds를 사용하며, 이 값을 넘기면 httpx가
@@ -149,11 +163,25 @@ class OllamaClient:
         실측 근거). 캐시 미스로 실제 Ollama를 호출하는 구간만
         `concurrency.heavy_task_slot`로 감싸 동시 실행 개수를 제한한다 — 캐시
         히트는 자원을 거의 안 쓰므로 세마포어를 거칠 필요가 없다.
+
+        `llm_observability_enabled`가 켜져 있으면(기본값) 캐시 히트/실제 호출
+        성공/실패를 모두 `llm_calls` 테이블에 기록한다(observability.store).
+        토큰 수는 Ollama 응답에 이미 포함된 prompt_eval_count/eval_count를
+        그대로 옮긴 것이라 별도 요청이 필요 없다.
         """
         cache_path = self._cache_path(prompt, schema_hint)
         if cache_path is not None and cache_path.is_file():
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            return _coerce_json_dict(cached)
+            result = _coerce_json_dict(cached)
+            self._record(
+                operation=operation,
+                prompt=prompt,
+                response=json.dumps(result, ensure_ascii=False),
+                success=True,
+                latency_ms=0.0,
+                cache_hit=True,
+            )
+            return result
         payload = {
             "model": self.settings.llm_model,
             "messages": [
@@ -170,16 +198,38 @@ class OllamaClient:
                 "num_predict": self.settings.llm_max_output_tokens,
             },
         }
-        with heavy_task_slot(self.settings):
-            response = httpx.post(
-                f"{self.settings.ollama_base_url.rstrip('/')}/api/chat",
-                json=payload,
-                timeout=self.settings.llm_timeout_seconds,
+        started_at = time.perf_counter()
+        try:
+            with heavy_task_slot(self.settings):
+                response = httpx.post(
+                    f"{self.settings.ollama_base_url.rstrip('/')}/api/chat",
+                    json=payload,
+                    timeout=self.settings.llm_timeout_seconds,
+                )
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            self._record(
+                operation=operation,
+                prompt=prompt,
+                response=None,
+                success=False,
+                error=str(exc),
+                latency_ms=(time.perf_counter() - started_at) * 1000,
             )
-        response.raise_for_status()
-        data = response.json()
+            raise
+        latency_ms = (time.perf_counter() - started_at) * 1000
         content = data.get("message", {}).get("content", data)
         result = _coerce_json_dict(content)
+        self._record(
+            operation=operation,
+            prompt=prompt,
+            response=json.dumps(result, ensure_ascii=False),
+            success=True,
+            latency_ms=latency_ms,
+            prompt_tokens=data.get("prompt_eval_count"),
+            completion_tokens=data.get("eval_count"),
+        )
         if cache_path is not None:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             temporary_path = cache_path.with_suffix(".json.part")
@@ -189,6 +239,35 @@ class OllamaClient:
             )
             temporary_path.replace(cache_path)
         return result
+
+    def _record(
+        self,
+        *,
+        operation: str,
+        prompt: str,
+        response: str | None,
+        success: bool,
+        error: str | None = None,
+        latency_ms: float | None = None,
+        cache_hit: bool = False,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+    ) -> None:
+        if not self.settings.llm_observability_enabled:
+            return
+        record_llm_call(
+            get_engine(self.settings),
+            operation=operation,
+            model=self.settings.llm_model,
+            prompt=prompt,
+            response=response,
+            success=success,
+            error=error,
+            latency_ms=latency_ms,
+            cache_hit=cache_hit,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
 
     def _cache_path(self, prompt: str, schema_hint: str) -> Path | None:
         """캐시가 비활성화되어 있으면 None, 아니면 요청 내용 해시로 캐시 파일 경로를 만든다."""
@@ -229,7 +308,9 @@ class PassthroughEnricher:
     품질을 보장하지 않는다.
     """
 
-    def generate_json(self, prompt: str, schema_hint: str) -> dict[str, Any]:
+    def generate_json(
+        self, prompt: str, schema_hint: str, operation: str = ""
+    ) -> dict[str, Any]:
         raise ValueError("PassthroughEnricher는 LLM JSON 생성을 수행하지 않습니다.")
 
     def enrich_paragraph(self, text: str) -> EnrichedParagraph:
@@ -277,7 +358,7 @@ def enrich_paragraph(client: LLMClient | PassthroughEnricher, text: str) -> Enri
     )
     for attempt in range(2):
         try:
-            data = client.generate_json(prompt, PARAGRAPH_SCHEMA_HINT)
+            data = client.generate_json(prompt, PARAGRAPH_SCHEMA_HINT, operation="paragraph_enrich")
             _validate_korean_output(
                 client,
                 data.get("summary", ""),
@@ -317,7 +398,9 @@ def extract_paper_keywords(
     prompt += "\n" + KOREAN_OUTPUT_RULE
     for attempt in range(2):
         try:
-            data = _coerce_json_dict(client.generate_json(prompt, KEYWORDS_SCHEMA_HINT))
+            data = _coerce_json_dict(
+                client.generate_json(prompt, KEYWORDS_SCHEMA_HINT, operation="keywords")
+            )
             keywords = _clean_keywords(data.get("keywords", []))
             _validate_korean_output(client, *keywords)
             if len(keywords) >= 3:
@@ -340,7 +423,9 @@ def summarize_table(client: LLMClient | PassthroughEnricher, table_text: str) ->
     prompt += "\n" + KOREAN_OUTPUT_RULE
     for attempt in range(2):
         try:
-            data = _coerce_json_dict(client.generate_json(prompt, TABLE_SCHEMA_HINT))
+            data = _coerce_json_dict(
+                client.generate_json(prompt, TABLE_SCHEMA_HINT, operation="table_summary")
+            )
             summary = str(data.get("summary", "")).strip()
             _validate_korean_output(client, summary)
             if summary:
@@ -368,7 +453,9 @@ def summarize_abstract(client: LLMClient | PassthroughEnricher, abstract: str) -
     prompt += "\n" + KOREAN_OUTPUT_RULE
     for attempt in range(2):
         try:
-            data = _coerce_json_dict(client.generate_json(prompt, ABSTRACT_SCHEMA_HINT))
+            data = _coerce_json_dict(
+                client.generate_json(prompt, ABSTRACT_SCHEMA_HINT, operation="abstract_summary")
+            )
             summary = str(data.get("summary", "")).strip()
             _validate_korean_output(client, summary)
             if summary:

@@ -50,7 +50,7 @@ else:
 
 
 class PromptAwareLLM:
-    def generate_json(self, prompt: str, schema_hint: str) -> dict[str, Any]:
+    def generate_json(self, prompt: str, schema_hint: str, operation: str = "") -> dict[str, Any]:
         if "RAG" in prompt:
             return {"keywords": ["RAG"]}
         return {"keywords": ["unknown"]}

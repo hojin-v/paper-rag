@@ -50,8 +50,10 @@ if [ "${SKIP_TESTS:-0}" != "1" ]; then
 fi
 
 # 2. 이미지 빌드(SHA 태그). 이 단계는 구 앱이 아직 떠 있는 동안 진행돼 다운타임을 줄인다.
+#    worker/ui는 docker-compose.yml에서 profiles가 붙어 있어(선택적 기동 대상) 서비스명을
+#    명시하지 않으면 build/up 대상에서 조용히 빠진다 — $APP_SERVICES로 항상 명시한다.
 log "이미지 빌드: paperrag:$SHA"
-docker compose build
+docker compose build $APP_SERVICES
 
 # 3. 앱 중지 → 마이그레이션 → 재기동
 log "앱 서비스 중지: $APP_SERVICES"
@@ -59,7 +61,7 @@ docker compose stop $APP_SERVICES || true
 log "DB 마이그레이션 적용"
 docker compose run --rm --no-deps api python scripts/apply_migrations.py
 log "새 이미지로 재기동"
-docker compose up -d
+docker compose up -d $APP_SERVICES
 
 # 4. 헬스체크: 새 코드가 실제로 떠서 응답하는지 확인(프로세스 기동 성공 여부 게이트).
 log "헬스체크 대기 (/health)"
@@ -74,7 +76,7 @@ if [ -z "$ok" ]; then
   log "헬스체크 실패"
   if [ -n "$PREV_TAG" ]; then
     log "이전 이미지로 롤백: paperrag:$PREV_TAG"
-    PAPERRAG_TAG="$PREV_TAG" docker compose up -d || true
+    PAPERRAG_TAG="$PREV_TAG" docker compose up -d $APP_SERVICES || true
     log "롤백 완료. 새 마이그레이션은 자동으로 되돌리지 않으므로 DB 상태를 확인하세요."
   else
     log "롤백할 이전 이미지가 없습니다(최초 배포). 로그를 확인하세요: docker compose logs api"

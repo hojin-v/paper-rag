@@ -146,7 +146,10 @@ def test_ollama_client_caches_valid_json(monkeypatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr(httpx, "post", fake_post)
     settings = Settings(
-        _env_file=None, llm_cache_dir=tmp_path, llm_observability_enabled=False
+        _env_file=None,
+        llm_cache_dir=tmp_path,
+        llm_observability_enabled=False,
+        heavy_task_max_concurrency=0,
     )
     client = OllamaClient(settings)
 
@@ -180,7 +183,12 @@ def test_ollama_client_records_successful_call(monkeypatch, tmp_path: Path) -> N
         recorded.update(kwargs)
 
     monkeypatch.setattr("paperrag.ingest.llm_enrich.record_llm_call", fake_record)
-    settings = Settings(_env_file=None, llm_cache_dir=tmp_path, llm_cache_enabled=False)
+    settings = Settings(
+        _env_file=None,
+        llm_cache_dir=tmp_path,
+        llm_cache_enabled=False,
+        heavy_task_max_concurrency=0,
+    )
     client = OllamaClient(settings)
 
     result = client.generate_json("prompt", '{"summary":"string"}', operation="paragraph_enrich")
@@ -213,7 +221,11 @@ def test_ollama_client_records_cache_hit(monkeypatch, tmp_path: Path) -> None:
         "paperrag.ingest.llm_enrich.record_llm_call",
         lambda engine, **kwargs: recorded_calls.append(kwargs),
     )
-    settings = Settings(_env_file=None, llm_cache_dir=tmp_path)
+    settings = Settings(
+        _env_file=None,
+        llm_cache_dir=tmp_path,
+        heavy_task_max_concurrency=0,
+    )
     client = OllamaClient(settings)
 
     client.generate_json("prompt", '{"summary":"string"}', operation="keywords")
@@ -238,7 +250,7 @@ def test_ollama_client_records_failure_and_reraises(monkeypatch, tmp_path: Path)
         "paperrag.ingest.llm_enrich.record_llm_call",
         lambda engine, **kwargs: recorded.update(kwargs),
     )
-    settings = Settings(_env_file=None, llm_cache_dir=tmp_path, llm_cache_enabled=False)
+    settings = Settings(_env_file=None, llm_cache_dir=tmp_path, llm_cache_enabled=False, heavy_task_max_concurrency=0)
     client = OllamaClient(settings)
 
     with pytest.raises(httpx.ConnectError):
@@ -261,9 +273,37 @@ def test_ollama_client_skips_recording_when_observability_disabled(monkeypatch, 
         llm_cache_dir=tmp_path,
         llm_cache_enabled=False,
         llm_observability_enabled=False,
+        heavy_task_max_concurrency=0,
     )
     client = OllamaClient(settings)
 
     result = client.generate_json("prompt", '{"summary":"string"}')
 
     assert result == {"summary": "ok"}
+
+
+def test_ollama_client_uses_custom_temperature_in_payload(monkeypatch, tmp_path: Path) -> None:
+    captured_payloads: list[dict[str, Any]] = []
+
+    def fake_post_capture(*args: Any, **kwargs: Any) -> httpx.Response:
+        captured_payloads.append(kwargs.get("json", {}))
+        request = httpx.Request("POST", str(args[0]))
+        return httpx.Response(
+            200, request=request, json={"message": {"content": '{"summary":"ok"}'}}
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post_capture)
+    settings = Settings(
+        _env_file=None,
+        llm_cache_dir=tmp_path,
+        llm_cache_enabled=False,
+        llm_temperature=0.0,
+        heavy_task_max_concurrency=0,
+    )
+    client = OllamaClient(settings)
+
+    client.generate_json("prompt", '{"summary":"string"}', operation="test", temperature=0.2)
+
+    assert len(captured_payloads) == 1
+    assert captured_payloads[0]["options"]["temperature"] == 0.2
+

@@ -127,7 +127,11 @@ ABSTRACT_PROMPT_TEMPLATE = """
 
 class LLMClient(Protocol):
     def generate_json(
-        self, prompt: str, schema_hint: str, operation: str = ""
+        self,
+        prompt: str,
+        schema_hint: str,
+        operation: str = "",
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         """Generate JSON matching the schema hint.
 
@@ -153,7 +157,11 @@ class OllamaClient:
         self.settings = settings or get_settings()
 
     def generate_json(
-        self, prompt: str, schema_hint: str, operation: str = ""
+        self,
+        prompt: str,
+        schema_hint: str,
+        operation: str = "",
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         """캐시를 먼저 확인하고 없으면 Ollama에 호출해 JSON 딕셔너리를 반환한다.
 
@@ -169,7 +177,8 @@ class OllamaClient:
         토큰 수는 Ollama 응답에 이미 포함된 prompt_eval_count/eval_count를
         그대로 옮긴 것이라 별도 요청이 필요 없다.
         """
-        cache_path = self._cache_path(prompt, schema_hint)
+        eff_temp = temperature if temperature is not None else self.settings.llm_temperature
+        cache_path = self._cache_path(prompt, schema_hint, temperature=eff_temp)
         if cache_path is not None and cache_path.is_file():
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
             result = _coerce_json_dict(cached)
@@ -194,7 +203,7 @@ class OllamaClient:
             "format": "json",
             "stream": False,
             "options": {
-                "temperature": self.settings.llm_temperature,
+                "temperature": eff_temp,
                 "num_predict": self.settings.llm_max_output_tokens,
             },
         }
@@ -269,14 +278,17 @@ class OllamaClient:
             completion_tokens=completion_tokens,
         )
 
-    def _cache_path(self, prompt: str, schema_hint: str) -> Path | None:
+    def _cache_path(
+        self, prompt: str, schema_hint: str, temperature: float | None = None
+    ) -> Path | None:
         """캐시가 비활성화되어 있으면 None, 아니면 요청 내용 해시로 캐시 파일 경로를 만든다."""
         if not self.settings.llm_cache_enabled:
             return None
+        eff_temp = temperature if temperature is not None else self.settings.llm_temperature
         key_payload = json.dumps(
             {
                 "model": self.settings.llm_model,
-                "temperature": self.settings.llm_temperature,
+                "temperature": eff_temp,
                 "max_output_tokens": self.settings.llm_max_output_tokens,
                 "prompt": prompt,
                 "schema_hint": schema_hint,
@@ -337,14 +349,43 @@ class PassthroughEnricher:
         return table_text.strip()[:200]
 
 
+def _get_retry_temperature(client: object) -> float:
+    """재시도(attempt > 0) 시 한국어 오염 유도성 결정론적 생성을 깨기 위한 temperature를 반환한다.
+
+    settings.llm_temperature가 0.0이면 0.2로 올리고, 0.0보다 크면 그 값을 유지하거나 최소 0.2로 보장한다.
+    """
+    settings = getattr(client, "settings", None)
+    base_temp = float(getattr(settings, "llm_temperature", 0.0)) if settings else 0.0
+    return max(base_temp, 0.2)
+
+
+def _generate_json_with_retry(
+    client: LLMClient | PassthroughEnricher,
+    prompt: str,
+    schema_hint: str,
+    operation: str,
+    attempt: int,
+) -> dict[str, Any]:
+    """attempt > 0일 때 temperature를 올려 재시도하고, 키워드 인자를 받지 않는 mock 클라이언트와 호환되도록 처리한다."""
+    if attempt > 0:
+        temp = _get_retry_temperature(client)
+        try:
+            return client.generate_json(
+                prompt, schema_hint, operation=operation, temperature=temp
+            )
+        except TypeError:
+            return client.generate_json(prompt, schema_hint, operation=operation)
+    return client.generate_json(prompt, schema_hint, operation=operation)
+
+
 def enrich_paragraph(client: LLMClient | PassthroughEnricher, text: str) -> EnrichedParagraph:
     """STEP 5의 핵심 함수: 단락 원문 1개를 LLM 1회 호출로 정제/요약/키워드/관련성 JSON으로 바꾼다.
 
     client가 PassthroughEnricher면 곧바로 패스스루 결과를 반환한다(개발 모드).
     그 외에는 한국어 출력 규칙을 포함한 프롬프트로 호출하고, 결과에 한자/중국어
     문자가 섞여 있으면(_validate_korean_output) 예외로 간주해 더 강한 한국어
-    강제 프롬프트(PARAGRAPH_KOREAN_RETRY_TEMPLATE)로 1회 재시도한다. 재시도까지
-    실패하면 allow_degraded_results 설정에 따라 LLMOutputError로 실패 처리하거나
+    강제 프롬프트(PARAGRAPH_KOREAN_RETRY_TEMPLATE)로 1회 재시도한다(재시도 시 temperature 0.2 적용).
+    재시도까지 실패하면 allow_degraded_results 설정에 따라 LLMOutputError로 실패 처리하거나
     PassthroughEnricher 결과로 조용히 대체한다 — 이 폴백 경로는
     docs/reports/benchmarks/2026-07-04-llm-cpu.md에서 실제 타임아웃 상황에
     파이프라인이 멈추지 않음을 확인한 안전장치다.
@@ -358,7 +399,9 @@ def enrich_paragraph(client: LLMClient | PassthroughEnricher, text: str) -> Enri
     )
     for attempt in range(2):
         try:
-            data = client.generate_json(prompt, PARAGRAPH_SCHEMA_HINT, operation="paragraph_enrich")
+            data = _generate_json_with_retry(
+                client, prompt, PARAGRAPH_SCHEMA_HINT, operation="paragraph_enrich", attempt=attempt
+            )
             _validate_korean_output(
                 client,
                 data.get("summary", ""),
@@ -399,7 +442,9 @@ def extract_paper_keywords(
     for attempt in range(2):
         try:
             data = _coerce_json_dict(
-                client.generate_json(prompt, KEYWORDS_SCHEMA_HINT, operation="keywords")
+                _generate_json_with_retry(
+                    client, prompt, KEYWORDS_SCHEMA_HINT, operation="keywords", attempt=attempt
+                )
             )
             keywords = _clean_keywords(data.get("keywords", []))
             _validate_korean_output(client, *keywords)
@@ -424,7 +469,9 @@ def summarize_table(client: LLMClient | PassthroughEnricher, table_text: str) ->
     for attempt in range(2):
         try:
             data = _coerce_json_dict(
-                client.generate_json(prompt, TABLE_SCHEMA_HINT, operation="table_summary")
+                _generate_json_with_retry(
+                    client, prompt, TABLE_SCHEMA_HINT, operation="table_summary", attempt=attempt
+                )
             )
             summary = str(data.get("summary", "")).strip()
             _validate_korean_output(client, summary)
@@ -454,7 +501,9 @@ def summarize_abstract(client: LLMClient | PassthroughEnricher, abstract: str) -
     for attempt in range(2):
         try:
             data = _coerce_json_dict(
-                client.generate_json(prompt, ABSTRACT_SCHEMA_HINT, operation="abstract_summary")
+                _generate_json_with_retry(
+                    client, prompt, ABSTRACT_SCHEMA_HINT, operation="abstract_summary", attempt=attempt
+                )
             )
             summary = str(data.get("summary", "")).strip()
             _validate_korean_output(client, summary)

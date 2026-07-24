@@ -803,6 +803,7 @@ class ReviewService:
         document.updated_at = datetime.now(UTC)
         self.store.save(document)
         try:
+            from paperrag.collect.service import lookup_source_metadata
             from paperrag.ingest.embeddings import HttpEmbeddingClient
             from paperrag.ingest.llm_enrich import OllamaClient
             from paperrag.ingest.repository import PostgresIngestRepository
@@ -831,7 +832,15 @@ class ReviewService:
                 HttpEmbeddingClient(self.settings),
                 settings=self.settings,
             )
-            report = pipeline.run(document.source_path)
+            # 저널명·원문 링크는 PDF에서 뽑히지 않으므로, 수집(collect) 단계를 거쳐 검수
+            # 큐에 들어온 문서라면 원본 업로드 파일명(document.filename — 검수 저장소는
+            # 실제 파일을 source.pdf로 복사·개명하므로 document.source_path에는 이 정보가
+            # 없다)에 남은 OpenAlex source_id로 collection-manifest에서 찾아 채운다.
+            # manifest에 없으면(직접 업로드 등) best effort로 (None, None) — 적재를 막지 않는다.
+            journal, full_text_link = lookup_source_metadata(document.filename, self.settings)
+            report = pipeline.run(
+                document.source_path, journal=journal, full_text_link=full_text_link
+            )
         except Exception as exc:
             document.status = "failed"
             document.error = str(exc)

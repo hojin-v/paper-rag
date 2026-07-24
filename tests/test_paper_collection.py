@@ -208,3 +208,57 @@ def test_lookup_source_metadata_missing_manifest_returns_none(tmp_path: Path) ->
     settings = _settings(tmp_path)
 
     assert lookup_source_metadata(tmp_path / "unknown.pdf", settings) == (None, None)
+
+
+def test_lookup_source_metadata_falls_back_to_source_id_in_filename(tmp_path: Path) -> None:
+    """검수 워크플로우는 업로드 파일을 source.pdf로 복사·개명해 경로/파일명이 더 이상
+
+    manifest의 local_path와 일치하지 않는다 — 원본 파일명(collect가 부여한
+    "{source_id}-슬러그.pdf" 패턴을 그대로 담고 있는 경우가 많음)에 남은 source_id
+    토큰만으로도 manifest를 찾을 수 있어야 한다(review.service.ReviewService.ingest가
+    document.filename을 넘겨 호출하는 경로).
+    """
+    settings = _settings(tmp_path)
+    original_pdf = tmp_path / "W4226020328-lilt-a-simple-yet-effective.pdf"
+    original_pdf.write_bytes(b"%PDF-1.7\n")
+    (tmp_path / "collection-manifest.jsonl").write_text(
+        json.dumps(
+            {
+                "source_id": "W4226020328",
+                "sha256": "abc",
+                "local_path": str(original_pdf),
+                "source_name": "ACL",
+                "landing_page_url": "https://doi.org/example",
+                "pdf_url": "https://example.test/paper.pdf",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    # 검수 저장소가 저장한 파일명(경로도 다르고 이름도 원본과 다름)이지만, 원본 업로드
+    # 파일명("consistency-v2-W4226020328-full-11p.pdf")을 대신 넘긴다.
+    journal, link = lookup_source_metadata(
+        "consistency-v2-W4226020328-full-11p.pdf", settings
+    )
+
+    assert journal == "ACL"
+    assert link == "https://doi.org/example"
+
+
+def test_lookup_source_metadata_no_source_id_token_returns_none(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    (tmp_path / "collection-manifest.jsonl").write_text(
+        json.dumps(
+            {
+                "source_id": "W4226020328",
+                "sha256": "abc",
+                "local_path": str(tmp_path / "W4226020328-lilt.pdf"),
+                "source_name": "ACL",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert lookup_source_metadata("source.pdf", settings) == (None, None)

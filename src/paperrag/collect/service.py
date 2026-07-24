@@ -257,18 +257,38 @@ class ManifestStore:
         return records
 
 
+_SOURCE_ID_RE = re.compile(r"\bW\d+\b")
+
+
+def _manifest_metadata(record: dict[str, Any]) -> tuple[str | None, str | None]:
+    """manifest 레코드 하나에서 (저널명, 원문 링크)를 뽑는다."""
+    journal = str(record.get("source_name") or "").strip() or None
+    link = (
+        str(record.get("landing_page_url") or "").strip()
+        or str(record.get("pdf_url") or "").strip()
+        or None
+    )
+    return journal, link
+
+
 def lookup_source_metadata(
     source_path: str | Path,
     settings: Settings | None = None,
 ) -> tuple[str | None, str | None]:
-    """적재 대상 PDF의 로컬 경로로 collection-manifest.jsonl에서 (저널명, 원문 링크)를 찾는다.
+    """적재 대상 PDF의 로컬 경로/파일명으로 collection-manifest.jsonl에서 (저널명, 원문 링크)를 찾는다.
 
-    적재 파이프라인(worker.ingest_collected_paper)이 papers.journal/full_text_link를 채우기
-    위해 호출한다. 저널명은 manifest의 `source_name`, 원문 링크는 `landing_page_url`
-    (없으면 `pdf_url`)에서 가져온다. manifest가 없거나 이 경로에 해당하는 레코드가 없거나
-    manifest 읽기에 실패하면 `(None, None)`을 반환한다 — 이 값은 부가 메타데이터라
-    없다고 적재를 막지 않는다(best effort). 경로는 절대경로로 정규화해 비교하고, 그래도
-    못 찾으면 파일명으로 한 번 더 매칭한다(작업 디렉터리가 다른 경우 방어).
+    적재 파이프라인(worker.ingest_collected_paper, review.service.ReviewService.ingest)이
+    papers.journal/full_text_link를 채우기 위해 호출한다. 저널명은 manifest의 `source_name`,
+    원문 링크는 `landing_page_url`(없으면 `pdf_url`)에서 가져온다. manifest가 없거나 이 경로에
+    해당하는 레코드가 없거나 manifest 읽기에 실패하면 `(None, None)`을 반환한다 — 이 값은 부가
+    메타데이터라 없다고 적재를 막지 않는다(best effort).
+
+    매칭 순서: (1) 절대경로 일치 (2) 파일명 전체 일치 (3) 파일명에 `_slug`가 부여한
+    `{source_id}-...` 접두 패턴의 source_id(예: "W4226020328")가 그대로 남아 있으면
+    manifest에서 그 source_id로 직접 조회. (3)은 검수 워크플로우(review.service)가 업로드된
+    파일을 `source.pdf`로 복사·개명해 (1)/(2)로는 못 찾는 경우를 위한 것이다 — 업로드 시
+    원본 파일명(예: "W4226020328-lilt-...pdf" 또는 그 파일명을 변형한 것, collect/cli가
+    수집할 때 원본 파일명에 source_id를 그대로 남겨두므로)만 알아도 매칭할 수 있다.
     """
     configured = settings or get_settings()
     manifest_path = (
@@ -288,13 +308,12 @@ def lookup_source_metadata(
             continue
         recorded_path = Path(str(recorded))
         if recorded_path.resolve() == target or recorded_path.name == target_name:
-            journal = str(record.get("source_name") or "").strip() or None
-            link = (
-                str(record.get("landing_page_url") or "").strip()
-                or str(record.get("pdf_url") or "").strip()
-                or None
-            )
-            return journal, link
+            return _manifest_metadata(record)
+    match = _SOURCE_ID_RE.search(target_name)
+    if match:
+        record = store.get(match.group(0))
+        if record is not None:
+            return _manifest_metadata(record)
     return None, None
 
 

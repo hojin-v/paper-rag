@@ -18,6 +18,7 @@ from typing import Any
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.worksheet.worksheet import Worksheet
 
 from paperrag.search.schemas import (
@@ -250,12 +251,15 @@ def _write_tables(sheet: Worksheet, tables: Iterable[TableInfo]) -> None:
 
 
 def _write_table_cells(sheet: Worksheet, tables: Iterable[TableInfo]) -> None:
-    """"표 셀" 시트: 표마다 실제 행×열 그리드를 그대로 그려 바로 읽고 복사해 쓸 수 있게 한다.
+    """"표 셀" 시트: 표마다 실제 엑셀 "표"(Table) 객체로 등록해 바로 필터·정렬해 쓸 수 있게 한다.
 
     과거의 (구분/표번호/표제목/행/열/셀값) 평면 목록 대신, 표 사이를 볼드 제목 행
-    ("[역할] 표 N — 제목")과 빈 줄로 구분하고 그 아래 실제 그리드를 그대로 나열한다.
-    각 표의 첫 데이터 행은 추출된 헤더 행으로 보고 볼드+배경으로 강조한다(표 구조
-    HTML의 <th>/<td> 구분은 이미 소실됐으므로, "첫 행 = 헤더"라는 관례적 추정이다).
+    ("[역할] 표 N — 제목")으로 구분하고 그 아래 실제 그리드를 `openpyxl.worksheet.table.Table`로
+    등록한다 — 엑셀에서 열면 일반 셀 나열이 아니라 필터 화살표·줄무늬 서식이 있는
+    진짜 표로 보인다. 표의 첫 데이터 행을 헤더 행으로 등록하는데(표 구조 HTML의
+    <th>/<td> 구분은 이미 소실됐으므로 "첫 행 = 헤더"라는 관례적 추정), 엑셀 표는
+    헤더 셀이 비어있거나 중복되면 열 때 복구 경고를 띄우므로 `_sanitize_table_headers`로
+    미리 채우고 구분해 둔다.
     """
     for table_index, table in enumerate(tables, start=1):
         label = f"[{table.role}] 표 {table_index}"
@@ -263,11 +267,46 @@ def _write_table_cells(sheet: Worksheet, tables: Iterable[TableInfo]) -> None:
             label = f"{label} — {table.table_title}"
         _append_row(sheet, [label])
         _emphasize_row(sheet, sheet.max_row, 1, bold=True)
-        for row_index, row in enumerate(_parse_table_rows(table.table_text)):
+
+        rows = _parse_table_rows(table.table_text)
+        if not rows:
+            _append_row(sheet, [])
+            continue
+
+        header_row_num = sheet.max_row + 1
+        max_cols = max(len(row) for row in rows)
+        _append_row(sheet, _sanitize_table_headers(rows[0], max_cols))
+        for row in rows[1:]:
             _append_row(sheet, row)
-            if row_index == 0:
-                _emphasize_row(sheet, sheet.max_row, len(row), bold=True, fill=True)
+        last_row_num = sheet.max_row
+
+        excel_table = Table(
+            displayName=f"Tbl{table_index}",
+            ref=f"A{header_row_num}:{get_column_letter(max_cols)}{last_row_num}",
+        )
+        excel_table.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2", showRowStripes=True
+        )
+        sheet.add_table(excel_table)
         _append_row(sheet, [])
+
+
+def _sanitize_table_headers(header_row: list[str], ncols: int) -> list[str]:
+    """엑셀 표의 헤더 행 제약(빈 값·중복 이름 금지)을 만족하도록 헤더 셀을 채운다.
+
+    ncols까지 부족한 칸은 빈 헤더로 채워야 하므로(엑셀 표 범위는 직사각형이어야
+    함) "열N"으로 채우고, 실제 값이 있어도 비어 있거나 중복되면 마찬가지로 보정한다.
+    """
+    seen: dict[str, int] = {}
+    sanitized: list[str] = []
+    for index in range(1, ncols + 1):
+        raw = header_row[index - 1].strip() if index <= len(header_row) else ""
+        name = raw or f"열{index}"
+        seen[name] = seen.get(name, 0) + 1
+        if seen[name] > 1:
+            name = f"{name}_{seen[name]}"
+        sanitized.append(name)
+    return sanitized
 
 
 def _parse_table_rows(table_text: str) -> list[list[str]]:

@@ -86,11 +86,41 @@ def test_build_excel_writes_sections_paragraphs_and_table_cells(tmp_path: Path) 
     assert table_cells["A1"].font.bold
     assert table_cells["A2"].value == "metric"
     assert table_cells["B2"].value == "value"
-    assert table_cells["A2"].font.bold
-    assert table_cells["A2"].fill.fgColor.rgb == "00D9EAF7"
     assert table_cells["A3"].value == "f1"
     assert table_cells["B3"].value == "0.90"
+    assert "Tbl1" in table_cells.tables
+    assert table_cells.tables["Tbl1"].ref == "A2:B3"
+    assert table_cells["B3"].value == "0.90"
     assert not table_cells["A3"].font.bold
+
+
+def test_table_cells_sheet_sanitizes_ragged_and_duplicate_headers(tmp_path: Path) -> None:
+    """빈 헤더·중복 헤더·행마다 다른 열 수를 가진 표도 유효한 엑셀 표 범위로 등록돼야 한다."""
+    out_path = tmp_path / "result.xlsx"
+    bundle = _bundle().model_copy(
+        update={
+            "tables": [
+                TableInfo(
+                    role="대표",
+                    table_title="Ragged Table",
+                    # 헤더 행: 빈 칸 하나, 데이터 행은 열 수가 제각각(엑셀 표는 직사각형이어야
+                    # 하므로 최대 열 수 3에 맞춰 범위가 정해져야 한다).
+                    table_text="a |  | 값\nx | y | z\np | q",
+                    table_summary="표 요약",
+                )
+            ]
+        }
+    )
+
+    excel_path = build_excel(bundle, out_path)
+
+    workbook = load_workbook(excel_path)
+    sheet = workbook["표 셀"]
+    assert sheet["A2"].value == "a"
+    assert sheet["B2"].value == "열2"
+    assert sheet["C2"].value == "값"
+    assert "Tbl1" in sheet.tables
+    assert sheet.tables["Tbl1"].ref == "A2:C4"
 
 
 def test_build_excel_excludes_related_sheets_when_disabled(tmp_path: Path) -> None:

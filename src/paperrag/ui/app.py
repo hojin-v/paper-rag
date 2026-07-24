@@ -930,22 +930,35 @@ def _render_result(
     _render_download(st, client, result.result_id)
 
 
+_ABSTRACT_OPTION = "초록"
+# 실제 section_name과 절대 겹치지 않는 값 — "초록만" 선택했을 때 단락은 하나도
+# 안 걸리게(섹션 필터가 아무것도 매칭하지 않게) 만드는 내부 신호로만 쓴다.
+_NO_SECTION_SENTINEL = "__섹션_없음__"
+
+
 def _render_output_options(st: Any, client: ApiClient, result: SearchMatched) -> None:
     """검색이 아니라 "찾은 결과를 엑셀에 어떻게 담을지"를 정하는 산출물 옵션을 그린다.
 
-    연관 논문 포함/표 포함/초록 포함/섹션 선택 네 가지는 전부 이미 확정된 검색
+    연관 논문 포함/표 포함/섹션(+초록) 선택 세 가지는 전부 이미 확정된 검색
     결과에서 무엇을 보여줄지만 좁히는 것이라(대표/연관 논문 선정 자체에는
-    영향 없음), 검색 폼이 아니라 결과 화면에 둔다. 섹션 선택지(`result.available_sections`)는
-    이 논문에 실제로 존재하는 section_name을 문서 등장 순서로 합친 목록이라
-    자유 텍스트 입력 없이 바로 고를 수 있고, 여러 섹션을 동시에 골라 결과·엑셀
-    단락을 그 조합으로 좁힐 수 있다(비워두면 전체 보기). "적용"을 누르면 직전과
-    같은 질의(`query`)를 유지한 채 이 네 옵션만 바꿔 `_run_search`를 다시 호출해
-    결과(및 엑셀)를 재구성한다.
+    영향 없음), 검색 폼이 아니라 결과 화면에 둔다.
+
+    초록은 예전엔 별도 체크박스(include_abstract)였지만, 지금은 섹션 선택
+    멀티셀렉트 안에 "초록"이라는 항목으로 합쳐 넣었다 — 논문 구조를 "섹션들 +
+    초록"으로 통일해서 보여주는 게 더 직관적이라는 판단. 섹션 선택지
+    (`result.available_sections`)는 이 논문에 실제로 존재하는 section_name을
+    문서 등장 순서로 합친 목록이라 자유 텍스트 입력 없이 바로 고를 수 있고,
+    "초록"을 포함해 여러 개를 동시에 골라 결과·엑셀 내용을 그 조합으로 좁힐 수
+    있다(비워두면 전체 보기 = 모든 섹션 + 초록). 초록만 고르고 실제 섹션은 하나도
+    안 고르면 단락은 전부 빼고 초록만 남겨야 하는데, section_query가 빈 리스트
+    (필터 없음)와 구분이 안 되므로 _NO_SECTION_SENTINEL로 "매칭되는 섹션 없음"을
+    명시적으로 표현한다. "적용"을 누르면 직전과 같은 질의(`query`)를 유지한 채
+    이 옵션들만 바꿔 `_run_search`를 다시 호출해 결과(및 엑셀)를 재구성한다.
     """
     st.subheader("결과물 구성")
 
     with st.form(f"output_options_{result.result_id}"):
-        option_columns = st.columns(3)
+        option_columns = st.columns(2)
         include_related = option_columns[0].checkbox(
             "연관 논문 포함",
             value=st.session_state["include_related"],
@@ -956,26 +969,31 @@ def _render_output_options(st: Any, client: ApiClient, result: SearchMatched) ->
             value=st.session_state["include_tables"],
             help="끄면 표 조회를 생략하고 엑셀에 표 데이터/표 셀 시트를 만들지 않습니다.",
         )
-        include_abstract = option_columns[2].checkbox(
-            "초록 포함",
-            value=st.session_state["include_abstract"],
-            help="끄면 논문 정보 시트의 초록 원문·초록 요약 칸을 비웁니다.",
-        )
 
-        section_query: list[str] | None = st.session_state.get("section_query")
-        if result.available_sections:
-            current = [
-                name
-                for name in (st.session_state.get("section_query") or [])
-                if name in result.available_sections
-            ]
-            chosen = st.multiselect(
-                "특정 섹션만 포함",
-                result.available_sections,
-                default=current,
-                help="이 논문에 실제로 있는 섹션 제목 중 하나 이상을 골라 결과·엑셀 단락을 좁힙니다. 아무것도 안 고르면 전체 보기입니다.",
-            )
-            section_query = chosen or None
+        previous_query = st.session_state.get("section_query")
+        previous_abstract = st.session_state.get("include_abstract", True)
+        if previous_query is None:
+            current = []
+        elif previous_query == [_NO_SECTION_SENTINEL]:
+            current = [_ABSTRACT_OPTION] if previous_abstract else []
+        else:
+            real = [name for name in previous_query if name in result.available_sections]
+            current = ([_ABSTRACT_OPTION] if previous_abstract else []) + real
+
+        chosen = st.multiselect(
+            "포함할 섹션(초록 포함)",
+            [_ABSTRACT_OPTION, *result.available_sections],
+            default=current,
+            help="'초록'과 이 논문에 실제로 있는 섹션 제목 중 하나 이상을 골라 결과·엑셀에 포함할 내용을 좁힙니다. 아무것도 안 고르면 전체 보기(모든 섹션 + 초록)입니다.",
+        )
+        include_abstract = not chosen or _ABSTRACT_OPTION in chosen
+        real_sections = [name for name in chosen if name != _ABSTRACT_OPTION]
+        if not chosen:
+            section_query: list[str] | None = None
+        elif real_sections:
+            section_query = real_sections
+        else:
+            section_query = [_NO_SECTION_SENTINEL]
 
         applied = st.form_submit_button("이 구성으로 다시 만들기")
 

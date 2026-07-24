@@ -5,8 +5,10 @@ DESIGN.md §5.3에 정의된 시트 구성: ① 검색 결과 요약 ② 대표 
 (설계서 요약은 6개 범주로 묶어 표현하지만 실제 워크북은 섹션/단락/표 셀 시트가 별도로 나뉜다.)
 기본값(모든 include_* 옵션 켜짐)에서는 9개 시트가 전부 만들어지지만, ResultBundle의
 include_related=False/include_tables=False로 사용자가 산출물 구성을 좁히면 해당 시트
-자체가 워크북에서 빠진다(⑤~⑦ 또는 ⑧~⑨). 모든 시트는 헤더 행 고정(freeze_panes)과
-원문 셀 줄바꿈, 열 너비 자동 조정을 공통 적용한다.
+자체가 워크북에서 빠진다(⑤~⑦ 또는 ⑧~⑨). 대부분의 시트는 헤더 행 고정(freeze_panes)과
+원문 셀 줄바꿈, 열 너비 자동 조정을 공통 적용한다 — 단, "표 셀" 시트는 표마다 열 구성이
+달라 표 단위로 실제 행×열 그리드를 그대로 그리고 표 사이만 제목 행으로 구분한다
+(전역 헤더 고정 대상이 아니다).
 """
 
 from collections.abc import Iterable
@@ -87,11 +89,15 @@ def build_excel(data: ResultBundle, out_path: str | Path) -> str:
         table_cells_sheet = workbook.create_sheet("표 셀")
         _write_table_cells(table_cells_sheet, data.tables)
 
-    # 공통 서식: 모든 시트에 헤더 강조 + 줄바꿈 + 열 너비 자동 조정을 적용한 뒤,
+    # 공통 서식: 대부분의 시트엔 헤더 강조 + 줄바꿈 + 열 너비 자동 조정을 적용한 뒤,
     # 원문/정제문이 긴 섹션·단락 시트와 표 내용 시트는 해당 열 너비를 고정폭으로 덮어써
-    # 자동 조정 결과가 지나치게 좁아지는 것을 막는다.
+    # 자동 조정 결과가 지나치게 좁아지는 것을 막는다. "표 셀" 시트는 표마다 열 구성이
+    # 달라 전역 헤더 고정이 의미가 없으므로 별도의 가벼운 서식만 적용한다.
     for sheet in workbook.worksheets:
-        _style_sheet(sheet)
+        if sheet.title == "표 셀":
+            _style_table_cell_sheet(sheet)
+        else:
+            _style_sheet(sheet)
     for sheet_name in paragraph_sheet_names:
         _style_paragraph_sheet(workbook[sheet_name])
     if tables_sheet is not None:
@@ -229,32 +235,39 @@ def _write_paragraphs(sheet: Worksheet, paragraphs: Iterable[ParagraphInfo]) -> 
 
 
 def _write_tables(sheet: Worksheet, tables: Iterable[TableInfo]) -> None:
-    """"표 데이터" 시트: 대표/연관 논문에 속한 표를 role로 구분해 표 단위(1행=표 1개)로 나열한다."""
-    _append_row(sheet, ["구분", "표 제목", "표 내용", "표 요약"])
-    for table in tables:
+    """"표 데이터" 시트: 대표/연관 논문에 속한 표를 role로 구분해 표 단위(1행=표 1개)로 나열한다.
+
+    "표 번호"는 "표 셀" 시트에서 같은 표의 실제 그리드를 찾아볼 수 있는 교차 참조용
+    번호(그 시트에 표가 나열된 순서와 동일)다. "표 내용"은 검색·비교용 평면 텍스트로
+    남겨두고, 사람이 바로 읽고 복사해 쓸 실제 행×열 그리드는 "표 셀" 시트에 그린다.
+    """
+    _append_row(sheet, ["구분", "표 번호", "표 제목", "표 내용", "표 요약"])
+    for table_index, table in enumerate(tables, start=1):
         _append_row(
             sheet,
-            [table.role, table.table_title, table.table_text, table.table_summary],
+            [table.role, table_index, table.table_title, table.table_text, table.table_summary],
         )
 
 
 def _write_table_cells(sheet: Worksheet, tables: Iterable[TableInfo]) -> None:
-    """"표 셀" 시트: 표 데이터 시트의 Markdown 표 문자열(table_text)을 1행=1셀 단위로 펼친다."""
-    _append_row(sheet, ["구분", "표 번호", "표 제목", "행", "열", "셀 값"])
+    """"표 셀" 시트: 표마다 실제 행×열 그리드를 그대로 그려 바로 읽고 복사해 쓸 수 있게 한다.
+
+    과거의 (구분/표번호/표제목/행/열/셀값) 평면 목록 대신, 표 사이를 볼드 제목 행
+    ("[역할] 표 N — 제목")과 빈 줄로 구분하고 그 아래 실제 그리드를 그대로 나열한다.
+    각 표의 첫 데이터 행은 추출된 헤더 행으로 보고 볼드+배경으로 강조한다(표 구조
+    HTML의 <th>/<td> 구분은 이미 소실됐으므로, "첫 행 = 헤더"라는 관례적 추정이다).
+    """
     for table_index, table in enumerate(tables, start=1):
-        for row_index, row in enumerate(_parse_table_rows(table.table_text), start=1):
-            for column_index, value in enumerate(row, start=1):
-                _append_row(
-                    sheet,
-                    [
-                        table.role,
-                        table_index,
-                        table.table_title,
-                        row_index,
-                        column_index,
-                        value,
-                    ],
-                )
+        label = f"[{table.role}] 표 {table_index}"
+        if table.table_title:
+            label = f"{label} — {table.table_title}"
+        _append_row(sheet, [label])
+        _emphasize_row(sheet, sheet.max_row, 1, bold=True)
+        for row_index, row in enumerate(_parse_table_rows(table.table_text)):
+            _append_row(sheet, row)
+            if row_index == 0:
+                _emphasize_row(sheet, sheet.max_row, len(row), bold=True, fill=True)
+        _append_row(sheet, [])
 
 
 def _parse_table_rows(table_text: str) -> list[list[str]]:
@@ -287,6 +300,18 @@ def _append_row(sheet: Worksheet, values: list[Any]) -> None:
     sheet.append(["" if value is None else value for value in values])
 
 
+def _emphasize_row(
+    sheet: Worksheet, row_index: int, ncols: int, *, bold: bool = False, fill: bool = False
+) -> None:
+    """지정한 행의 앞 ncols칸만 볼드/배경으로 강조한다("표 셀" 시트의 표 제목·헤더 행용)."""
+    for column in range(1, ncols + 1):
+        cell = sheet.cell(row=row_index, column=column)
+        if bold:
+            cell.font = HEADER_FONT
+        if fill:
+            cell.fill = HEADER_FILL
+
+
 def _style_sheet(sheet: Worksheet) -> None:
     """모든 시트에 공통 적용하는 서식: 헤더 행 고정 + 헤더 강조 + 전체 셀 줄바꿈 + 열 너비 자동 조정.
 
@@ -304,6 +329,18 @@ def _style_sheet(sheet: Worksheet) -> None:
     _auto_width(sheet)
 
 
+def _style_table_cell_sheet(sheet: Worksheet) -> None:
+    """"표 셀" 시트 전용 서식: 표마다 헤더가 달라 전역 헤더 고정(freeze_panes)이나
+
+    1행 강조는 의미가 없으므로(표별 제목·헤더 행 강조는 `_write_table_cells`가 이미
+    했다) 줄바꿈 + 열 너비 자동 조정만 적용한다.
+    """
+    for row in sheet.iter_rows():
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+    _auto_width(sheet)
+
+
 def _style_paragraph_sheet(sheet: Worksheet) -> None:
     """섹션/단락 시트의 원문(C열)·정제문(D열)은 자동 너비 대신 60폭으로 고정해 가독성을 확보한다."""
     for column in ("C", "D"):
@@ -311,8 +348,8 @@ def _style_paragraph_sheet(sheet: Worksheet) -> None:
 
 
 def _style_table_sheet(sheet: Worksheet) -> None:
-    """표 데이터 시트의 표 내용(C열)도 같은 이유로 60폭으로 고정한다."""
-    sheet.column_dimensions["C"].width = 60
+    """표 데이터 시트의 표 내용(D열, "표 번호" 열 추가로 한 칸 밀림)도 같은 이유로 60폭으로 고정한다."""
+    sheet.column_dimensions["D"].width = 60
 
 
 def _auto_width(sheet: Worksheet) -> None:

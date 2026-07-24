@@ -76,14 +76,21 @@ def test_build_excel_writes_sections_paragraphs_and_table_cells(tmp_path: Path) 
 
     tables = workbook["표 데이터"]
     assert tables["A1"].value == "구분"
+    assert tables["B1"].value == "표 번호"
     assert tables["A2"].value == "대표"
-    assert tables["C2"].value == "metric | value\nf1 | 0.90"
+    assert tables["B2"].value == 1
+    assert tables["D2"].value == "metric | value\nf1 | 0.90"
 
     table_cells = workbook["표 셀"]
-    assert table_cells["F2"].value == "metric"
-    assert table_cells["F3"].value == "value"
-    assert table_cells["F4"].value == "f1"
-    assert table_cells["F5"].value == "0.90"
+    assert table_cells["A1"].value == "[대표] 표 1 — Table 1"
+    assert table_cells["A1"].font.bold
+    assert table_cells["A2"].value == "metric"
+    assert table_cells["B2"].value == "value"
+    assert table_cells["A2"].font.bold
+    assert table_cells["A2"].fill.fgColor.rgb == "00D9EAF7"
+    assert table_cells["A3"].value == "f1"
+    assert table_cells["B3"].value == "0.90"
+    assert not table_cells["A3"].font.bold
 
 
 def test_build_excel_excludes_related_sheets_when_disabled(tmp_path: Path) -> None:

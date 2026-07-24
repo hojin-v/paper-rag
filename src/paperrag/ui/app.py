@@ -820,7 +820,7 @@ def _run_search(
     client: ApiClient,
     query: str,
     *,
-    section_query: str | None = None,
+    section_query: list[str] | None = None,
     include_related: bool = True,
     include_tables: bool = True,
     include_abstract: bool = True,
@@ -895,6 +895,7 @@ def _render_suggestions(st: Any, client: ApiClient, suggestion: SearchSuggest) -
             st.error(f"API 요청에 실패했습니다: {exc}")
             return
         _set_result(st, result)
+        st.rerun()
 
 
 def _render_result(
@@ -936,8 +937,9 @@ def _render_output_options(st: Any, client: ApiClient, result: SearchMatched) ->
     결과에서 무엇을 보여줄지만 좁히는 것이라(대표/연관 논문 선정 자체에는
     영향 없음), 검색 폼이 아니라 결과 화면에 둔다. 섹션 선택지(`result.available_sections`)는
     이 논문에 실제로 존재하는 section_name을 문서 등장 순서로 합친 목록이라
-    자유 텍스트 입력 없이 바로 고를 수 있다. "적용"을 누르면 직전과 같은
-    질의(`query`)를 유지한 채 이 네 옵션만 바꿔 `_run_search`를 다시 호출해
+    자유 텍스트 입력 없이 바로 고를 수 있고, 여러 섹션을 동시에 골라 결과·엑셀
+    단락을 그 조합으로 좁힐 수 있다(비워두면 전체 보기). "적용"을 누르면 직전과
+    같은 질의(`query`)를 유지한 채 이 네 옵션만 바꿔 `_run_search`를 다시 호출해
     결과(및 엑셀)를 재구성한다.
     """
     st.subheader("결과물 구성")
@@ -960,19 +962,20 @@ def _render_output_options(st: Any, client: ApiClient, result: SearchMatched) ->
             help="끄면 논문 정보 시트의 초록 원문·초록 요약 칸을 비웁니다.",
         )
 
-        section_query: str | None = st.session_state.get("section_query")
+        section_query: list[str] | None = st.session_state.get("section_query")
         if result.available_sections:
-            all_option = "전체 보기"
-            options = [all_option, *result.available_sections]
-            current = st.session_state.get("section_query")
-            current_index = options.index(current) if current in options else 0
-            chosen = st.selectbox(
+            current = [
+                name
+                for name in (st.session_state.get("section_query") or [])
+                if name in result.available_sections
+            ]
+            chosen = st.multiselect(
                 "특정 섹션만 포함",
-                options,
-                index=current_index,
-                help="이 논문에 실제로 있는 섹션 제목 중 하나만 골라 결과·엑셀 단락을 좁힙니다.",
+                result.available_sections,
+                default=current,
+                help="이 논문에 실제로 있는 섹션 제목 중 하나 이상을 골라 결과·엑셀 단락을 좁힙니다. 아무것도 안 고르면 전체 보기입니다.",
             )
-            section_query = None if chosen == all_option else chosen
+            section_query = chosen or None
 
         applied = st.form_submit_button("이 구성으로 다시 만들기")
 

@@ -55,7 +55,7 @@ class SuggestionSessionStore:
         candidates: list[KeywordCandidate],
         query_keywords: list[str] | None = None,
         *,
-        section_query: str | None = None,
+        section_query: list[str] | None = None,
         include_related: bool = True,
         include_tables: bool = True,
         include_abstract: bool = True,

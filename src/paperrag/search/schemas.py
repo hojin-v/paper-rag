@@ -18,7 +18,8 @@ class SearchRequest(BaseModel):
     query 외 나머지 필드는 전부 선택값이다. 질의 키워드 추출은 항상 LLM(Ollama)로
     이뤄진다 — 형태소 분석 빠른 경로는 사용자가 고르는 옵션이 아니라 LLM 실패
     시의 내부 안전망일 뿐이다(SearchService.extract_keywords 참고). section_query를
-    지정하면 결과(엑셀 포함) 단락을 그 문자열을 포함하는 section_name으로만 좁힌다.
+    지정하면 결과(엑셀 포함) 단락을 그 목록의 이름 중 하나라도 포함하는
+    section_name으로만 좁힌다(여러 섹션 동시 선택 가능).
     include_related=False면 연관 논문 조회 자체를 생략하고 응답·엑셀에서
     연관 논문 관련 항목을 전부 제외한다. include_tables=False면 표 조회를
     생략하고 엑셀에 표 시트를 만들지 않는다. include_abstract=False면
@@ -27,7 +28,7 @@ class SearchRequest(BaseModel):
     """
 
     query: str = Field(min_length=1)
-    section_query: str | None = None
+    section_query: list[str] | None = None
     include_related: bool = True
     include_tables: bool = True
     include_abstract: bool = True

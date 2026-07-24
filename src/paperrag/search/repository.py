@@ -27,6 +27,20 @@ from paperrag.ingest.keywords import normalize
 from paperrag.search.schemas import KeywordCandidate, PaperSummary
 
 
+def _normalize_section_query(section_query: list[str] | None) -> list[str] | None:
+    """section_query 목록의 공백·빈 문자열을 정리하고, 남는 게 없으면 None(필터 없음)으로 정규화한다.
+
+    문자열 하나만 온 경우(과거 API의 단일 문자열 호출 습관, 타입 힌트로는 막을 수
+    없음)도 한 글자씩 쪼개지는 대신 이름 하나짜리 목록으로 취급한다.
+    """
+    if isinstance(section_query, str):
+        section_query = [section_query]
+    if not section_query:
+        return None
+    cleaned = [name.strip() for name in section_query if name and name.strip()]
+    return cleaned or None
+
+
 @dataclass(frozen=True)
 class KeywordRow:
     """keywords 테이블 1행. keyword는 정규화형(정확 매칭 대조용), display_form은 화면 표시용 원형 표기."""
@@ -145,12 +159,13 @@ class SearchRepository(Protocol):
         self,
         paper_id: int,
         *,
-        section_query: str | None = None,
+        section_query: list[str] | None = None,
     ) -> list[ParagraphRow]:
         """엑셀 단락/섹션 시트용: is_topic_relevant=true인 단락만 paragraph_order 순으로 반환한다.
 
-        section_query가 주어지면 section_name에 그 문자열이(대소문자 무시) 포함된
-        단락만 반환한다 — 사용자가 검색 산출물의 특정 섹션만 받고 싶을 때 쓰는 필터다.
+        section_query가 주어지면 section_name에 그 목록 중 하나라도(대소문자 무시)
+        포함된 단락만 반환한다 — 사용자가 검색 산출물의 특정 섹션 하나 이상만
+        받고 싶을 때 쓰는 필터다.
         """
 
     def top_matching_paragraph(
@@ -428,12 +443,26 @@ class PostgresSearchRepository:
         self,
         paper_id: int,
         *,
-        section_query: str | None = None,
+        section_query: list[str] | None = None,
     ) -> list[ParagraphRow]:
-        # section_pattern이 NULL이면 "IS NULL" 분기가 참이 되어 필터 없이 전체를 반환하고,
-        # 값이 있으면 ILIKE(대소문자 무시 부분 일치)로 section_name을 좁힌다.
+        # section_query가 없으면 필터절이 TRUE가 되어 전체를 반환하고, 있으면 각 이름마다
+        # 별도 named parameter로 바인딩한 ILIKE 조건을 OR로 묶는다(배열 파라미터 캐스팅 대신
+        # 기존 단일값 방식과 동일한 스칼라 바인딩을 반복하는 쪽이 SQLAlchemy+psycopg에서
+        # 타입 추론이 안정적이다 — tests/integration/test_e2e_scenario.py의
+        # AmbiguousParameter 회귀 테스트가 이 방식으로 통과함을 검증한다).
+        names = _normalize_section_query(section_query)
+        params: dict[str, Any] = {"paper_id": paper_id}
+        if names is None:
+            section_clause = "TRUE"
+        else:
+            clauses = []
+            for index, name in enumerate(names):
+                key = f"section_pattern_{index}"
+                clauses.append(f"section_name ILIKE CAST(:{key} AS text)")
+                params[key] = f"%{name}%"
+            section_clause = "(" + " OR ".join(clauses) + ")"
         statement = text(
-            """
+            f"""
             SELECT
                 paragraph_id,
                 paper_id,
@@ -446,21 +475,12 @@ class PostgresSearchRepository:
             FROM paragraphs
             WHERE paper_id = :paper_id
               AND is_topic_relevant = true
-              AND (
-                CAST(:section_pattern AS text) IS NULL
-                OR section_name ILIKE CAST(:section_pattern AS text)
-              )
+              AND {section_clause}
             ORDER BY paragraph_order ASC, paragraph_id ASC
             """
         )
-        section_pattern = (
-            f"%{section_query.strip()}%" if section_query and section_query.strip() else None
-        )
         with self.engine.begin() as connection:
-            rows = connection.execute(
-                statement,
-                {"paper_id": paper_id, "section_pattern": section_pattern},
-            ).mappings().all()
+            rows = connection.execute(statement, params).mappings().all()
         return [
             ParagraphRow(
                 paragraph_id=int(row["paragraph_id"]),
@@ -955,19 +975,23 @@ class InMemorySearchRepository:
         self,
         paper_id: int,
         *,
-        section_query: str | None = None,
+        section_query: list[str] | None = None,
     ) -> list[ParagraphRow]:
-        # Postgres 구현의 ILIKE '%...%'와 동일한 대소문자 무시 부분 일치를 재현한다
-        # (Kiwi normalize()를 쓰지 않는 이유: 형태소 정규화는 ILIKE와 의미가 달라
-        # 두 구현의 필터 동작이 갈릴 수 있다).
-        needle = section_query.strip().lower() if section_query and section_query.strip() else None
+        # Postgres 구현의 ILIKE '%...%' OR 묶음과 동일한 대소문자 무시 부분 일치(목록 중
+        # 하나라도 일치)를 재현한다(Kiwi normalize()를 쓰지 않는 이유: 형태소 정규화는
+        # ILIKE와 의미가 달라 두 구현의 필터 동작이 갈릴 수 있다).
+        names = _normalize_section_query(section_query)
+        needles = [name.lower() for name in names] if names is not None else None
         paper_keywords = self.paper_keywords(paper_id)
         rows = [
             row
             for row in self.paragraph_rows
             if int(row["paper_id"]) == paper_id
             and row.get("is_topic_relevant", True)
-            and (needle is None or needle in str(row.get("section_name") or "").lower())
+            and (
+                needles is None
+                or any(needle in str(row.get("section_name") or "").lower() for needle in needles)
+            )
         ]
         rows.sort(key=lambda row: (int(row["paragraph_order"]), int(row["paragraph_id"])))
         return [

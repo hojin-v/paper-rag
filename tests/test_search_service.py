@@ -331,7 +331,7 @@ def test_resolve_section_query_bypasses_cache_even_if_present(tmp_path: Path) ->
     service = SearchService(repo, RaisingLLM(), StaticEmbeddingClient(), _settings(tmp_path))
 
     result = service.resolve(
-        1, "RAG 관련 논문", "exact", matched_keyword="RAG", section_query="실험"
+        1, "RAG 관련 논문", "exact", matched_keyword="RAG", section_query=["실험"]
     )
 
     assert result.result_id != "r-cached-0001"

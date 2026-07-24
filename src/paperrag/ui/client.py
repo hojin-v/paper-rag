@@ -55,7 +55,7 @@ class ApiClient:
         self,
         query: str,
         *,
-        section_query: str | None = None,
+        section_query: list[str] | None = None,
         include_related: bool = True,
         include_tables: bool = True,
         include_abstract: bool = True,
@@ -70,9 +70,9 @@ class ApiClient:
 
         키워드 추출은 항상 LLM(Ollama)으로 이뤄진다(직렬 처리라 지연이 있음 —
         `docs/reports/assessments/2026-07-22-llm-search-capacity.md` 참고).
-        section_query를 주면 결과 단락을 그 섹션명을 포함하는 것만으로 좁힌다(응답의
-        `available_sections`가 실제 존재하는 섹션 제목 목록이므로, 다음 호출의
-        section_query는 그 목록에서 고른 값을 넣는 것을 가정한다). include_related=False면
+        section_query를 주면 결과 단락을 그 목록 중 하나라도 포함하는 섹션명만으로
+        좁힌다(응답의 `available_sections`가 실제 존재하는 섹션 제목 목록이므로, 다음
+        호출의 section_query는 그 목록에서 여러 개 골라 넣는 것을 가정한다). include_related=False면
         연관 논문 관련 항목·시트를, include_tables=False면 표 관련 시트를,
         include_abstract=False면 논문 정보 시트의 초록 칸을 아예 만들지/채우지 않는다
         (셋 다 기본은 True — 산출물 구성을 사용자가 좁히는 옵션).

@@ -12,16 +12,24 @@ def test_paragraphs_of_without_section_query_returns_all() -> None:
 def test_paragraphs_of_filters_by_section_query_case_insensitive() -> None:
     repo = _repo()
 
-    rows = repo.paragraphs_of(1, section_query="method")
+    rows = repo.paragraphs_of(1, section_query=["method"])
 
     assert len(rows) == 1
     assert rows[0].section_name == "Methods"
 
 
+def test_paragraphs_of_matches_any_of_multiple_section_names() -> None:
+    repo = _repo()
+
+    rows = repo.paragraphs_of(1, section_query=["method", "intro"])
+
+    assert {row.section_name for row in rows} == {"Introduction", "Methods"}
+
+
 def test_paragraphs_of_blank_section_query_is_ignored() -> None:
     repo = _repo()
 
-    rows = repo.paragraphs_of(1, section_query="   ")
+    rows = repo.paragraphs_of(1, section_query=["   "])
 
     assert len(rows) == 2
 
@@ -29,7 +37,7 @@ def test_paragraphs_of_blank_section_query_is_ignored() -> None:
 def test_paragraphs_of_no_match_returns_empty() -> None:
     repo = _repo()
 
-    rows = repo.paragraphs_of(1, section_query="존재하지않는섹션")
+    rows = repo.paragraphs_of(1, section_query=["존재하지않는섹션"])
 
     assert rows == []
 

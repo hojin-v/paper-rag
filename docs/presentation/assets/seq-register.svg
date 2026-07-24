@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="710" viewBox="0 0 1400 710" role="img" aria-labelledby="title">
+  <title id="title">논문 등록·검수 시퀀스</title>
+  <defs>
+    <marker id="aC" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#33475b"/></marker>
+    <marker id="aR" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#7c8a9a"/></marker>
+    <style>
+      .title{font:700 25px system-ui,sans-serif;fill:#0f2438}
+      .pHead{font:700 15px system-ui,sans-serif;fill:#ffffff;text-anchor:middle}
+      .pSub{font:500 11px ui-monospace,monospace;fill:#cfe0f2;text-anchor:middle}
+      .pHeadW{font:700 15px system-ui,sans-serif;fill:#1e293b;text-anchor:middle}
+      .pSubW{font:500 11px ui-monospace,monospace;fill:#64748b;text-anchor:middle}
+      .life{stroke:#b8c4d2;stroke-width:1.5;stroke-dasharray:4,5}
+      .call{stroke:#33475b;stroke-width:2.2;fill:none;marker-end:url(#aC)}
+      .ret{stroke:#7c8a9a;stroke-width:1.8;fill:none;stroke-dasharray:6,5;marker-end:url(#aR)}
+      .msg{font:600 13px system-ui,sans-serif;fill:#28374a;text-anchor:middle}
+      .msgMono{font:600 12px ui-monospace,monospace;fill:#4a6b8a;text-anchor:middle}
+      .note{font:500 12.5px system-ui,sans-serif;fill:#8a6d1a;text-anchor:middle}
+      .frameTab{font:700 11px system-ui,sans-serif;fill:#0f766e}
+    </style>
+  </defs>
+  <rect width="1400" height="710" fill="#ffffff"/>
+  <text x="60" y="38" class="title">① 논문 등록 · 검수 시퀀스</text>
+
+  <!-- participants -->
+  <rect x="55" y="56" width="170" height="58" rx="10" fill="#0a2745"/>
+  <text x="140" y="82" class="pHead">검수자</text><text x="140" y="101" class="pSub">actor</text>
+  <rect x="315" y="56" width="230" height="58" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.4"/>
+  <text x="430" y="82" class="pHeadW">검수 API</text><text x="430" y="101" class="pSubW">review/api.py</text>
+  <rect x="620" y="56" width="220" height="58" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.4"/>
+  <text x="730" y="82" class="pHeadW">Paddle</text><text x="730" y="101" class="pSubW">레이아웃 · OCR</text>
+  <rect x="910" y="56" width="200" height="58" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.4"/>
+  <text x="1010" y="82" class="pHeadW">검수 저장소</text><text x="1010" y="101" class="pSubW">PostgreSQL</text>
+  <rect x="1185" y="56" width="180" height="58" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.4"/>
+  <text x="1275" y="82" class="pHeadW">Celery 워커</text><text x="1275" y="101" class="pSubW">worker</text>
+
+  <!-- lifelines -->
+  <line x1="140" y1="114" x2="140" y2="690" class="life"/>
+  <line x1="430" y1="114" x2="430" y2="690" class="life"/>
+  <line x1="730" y1="114" x2="730" y2="690" class="life"/>
+  <line x1="1010" y1="114" x2="1010" y2="690" class="life"/>
+  <line x1="1275" y1="114" x2="1275" y2="690" class="life"/>
+
+  <!-- messages -->
+  <text x="285" y="152" class="msg">PDF 업로드 <tspan class="msgMono">POST /documents</tspan></text>
+  <path d="M140,160 L428,160" class="call"/>
+
+  <text x="585" y="204" class="msg">전 페이지 레이아웃 검출</text>
+  <path d="M430,212 L728,212" class="call"/>
+
+  <text x="585" y="248" class="msg">블록 좌표·유형·confidence</text>
+  <path d="M730,256 L432,256" class="ret"/>
+
+  <text x="720" y="300" class="msg">저장 · <tspan class="msgMono">phase=layout_review</tspan></text>
+  <path d="M430,308 L1008,308" class="call"/>
+
+  <!-- loop frame -->
+  <rect x="95" y="336" width="960" height="52" rx="8" fill="none" stroke="#8fd3c3" stroke-width="1.4" stroke-dasharray="5,4"/>
+  <rect x="95" y="336" width="70" height="20" rx="4" fill="#d9f2ea"/>
+  <text x="108" y="350" class="frameTab">loop</text>
+  <text x="360" y="368" class="msg">박스·유형·OCR 텍스트 교정 <tspan class="msgMono">PUT/DELETE /blocks</tspan></text>
+  <path d="M140,376 L1008,376" class="call"/>
+
+  <text x="285" y="420" class="msg">OCR 실행 <tspan class="msgMono">POST /run-ocr/async</tspan></text>
+  <path d="M140,428 L428,428" class="call"/>
+
+  <text x="855" y="464" class="msg">run_reviewed_ocr_task <tspan class="msgMono">(Redis broker)</tspan></text>
+  <path d="M430,472 L1273,472" class="call"/>
+
+  <text x="1005" y="512" class="msg">영역별 crop OCR</text>
+  <path d="M1275,520 L732,520" class="call"/>
+
+  <text x="1145" y="560" class="msg">phase=ocr_review</text>
+  <path d="M1275,568 L1012,568" class="call"/>
+  <text x="700" y="596" class="note">※ async 실패 시 API가 동기 경로(run_reviewed_ocr)로 자동 폴백</text>
+
+  <text x="285" y="630" class="msg">confirm-ocr → <tspan class="msgMono">ready_to_ingest</tspan></text>
+  <path d="M140,638 L428,638" class="call"/>
+
+  <text x="720" y="674" class="msg">ingest — papers·paragraphs·keywords + 임베딩 적재</text>
+  <path d="M430,682 L1008,682" class="call"/>
+</svg>

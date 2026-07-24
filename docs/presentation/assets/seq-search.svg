@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="700" viewBox="0 0 1400 700" role="img" aria-labelledby="title">
+  <title id="title">검색·엑셀 시퀀스</title>
+  <defs>
+    <marker id="aC" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#33475b"/></marker>
+    <marker id="aR" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#7c8a9a"/></marker>
+    <style>
+      .title{font:700 25px system-ui,sans-serif;fill:#0f2438}
+      .pHead{font:700 15px system-ui,sans-serif;fill:#ffffff;text-anchor:middle}
+      .pSub{font:500 11px ui-monospace,monospace;fill:#cfe0f2;text-anchor:middle}
+      .pHeadW{font:700 15px system-ui,sans-serif;fill:#1e293b;text-anchor:middle}
+      .pSubW{font:500 11px ui-monospace,monospace;fill:#64748b;text-anchor:middle}
+      .life{stroke:#b8c4d2;stroke-width:1.5;stroke-dasharray:4,5}
+      .call{stroke:#33475b;stroke-width:2.2;fill:none;marker-end:url(#aC)}
+      .ret{stroke:#7c8a9a;stroke-width:1.8;fill:none;stroke-dasharray:6,5;marker-end:url(#aR)}
+      .msg{font:600 13px system-ui,sans-serif;fill:#28374a;text-anchor:middle}
+      .msgMono{font:600 12px ui-monospace,monospace;fill:#4a6b8a;text-anchor:middle}
+      .frameTab{font:700 11px system-ui,sans-serif;fill:#0f766e}
+      .noteBox{fill:#fff7e6;stroke:#e6c877;stroke-width:1.3}
+      .note{font:600 12.5px system-ui,sans-serif;fill:#8a6d1a;text-anchor:middle}
+    </style>
+  </defs>
+  <rect width="1400" height="700" fill="#ffffff"/>
+  <text x="60" y="38" class="title">② 검색 · 엑셀 다운로드 시퀀스</text>
+
+  <!-- participants -->
+  <rect x="55" y="56" width="150" height="58" rx="10" fill="#0a2745"/>
+  <text x="130" y="82" class="pHead">검색 사용자</text><text x="130" y="101" class="pSub">actor</text>
+  <rect x="250" y="56" width="220" height="58" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.4"/>
+  <text x="360" y="82" class="pHeadW">Streamlit UI</text><text x="360" y="101" class="pSubW">:8501</text>
+  <rect x="520" y="56" width="210" height="58" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.4"/>
+  <text x="625" y="82" class="pHeadW">검색 API</text><text x="625" y="101" class="pSubW">search/api.py</text>
+  <rect x="785" y="56" width="190" height="58" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.4"/>
+  <text x="880" y="82" class="pHeadW">Ollama</text><text x="880" y="101" class="pSubW">Qwen2.5-7B</text>
+  <rect x="995" y="56" width="180" height="58" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.4"/>
+  <text x="1085" y="82" class="pHeadW">embedder</text><text x="1085" y="101" class="pSubW">BGE-M3</text>
+  <rect x="1195" y="56" width="190" height="58" rx="10" fill="#ffffff" stroke="#647a94" stroke-width="1.4"/>
+  <text x="1290" y="82" class="pHeadW">PostgreSQL</text><text x="1290" y="101" class="pSubW">+pgvector</text>
+
+  <!-- lifelines -->
+  <line x1="130" y1="114" x2="130" y2="650" class="life"/>
+  <line x1="360" y1="114" x2="360" y2="650" class="life"/>
+  <line x1="625" y1="114" x2="625" y2="650" class="life"/>
+  <line x1="880" y1="114" x2="880" y2="650" class="life"/>
+  <line x1="1085" y1="114" x2="1085" y2="650" class="life"/>
+  <line x1="1290" y1="114" x2="1290" y2="650" class="life"/>
+
+  <!-- messages -->
+  <text x="245" y="144" class="msg">자연어 질의</text>
+  <path d="M130,152 L358,152" class="call"/>
+
+  <text x="492" y="184" class="msg">POST /search <tspan class="msgMono">{query}</tspan></text>
+  <path d="M360,192 L623,192" class="call"/>
+
+  <text x="752" y="224" class="msg">질의 키워드 추출 (매 검색)</text>
+  <path d="M625,232 L878,232" class="call"/>
+
+  <text x="752" y="262" class="msg">keywords[]</text>
+  <path d="M880,270 L627,270" class="ret"/>
+
+  <text x="957" y="302" class="msg">정확 매칭 (keywords + aliases)</text>
+  <path d="M625,310 L1288,310" class="call"/>
+
+  <text x="855" y="342" class="msg">매칭 키워드 임베딩 → 질의 벡터(1024)</text>
+  <path d="M625,350 L1083,350" class="call"/>
+
+  <text x="957" y="382" class="msg">대표 점수 계산 + 연관 논문 조회</text>
+  <path d="M625,390 L1288,390" class="call"/>
+
+  <text x="957" y="420" class="msg">대표 논문 1 + 연관 논문 1</text>
+  <path d="M1290,428 L627,428" class="ret"/>
+
+  <!-- loop RAG -->
+  <rect x="595" y="452" width="320" height="52" rx="8" fill="none" stroke="#8fd3c3" stroke-width="1.4" stroke-dasharray="5,4"/>
+  <rect x="595" y="452" width="132" height="20" rx="4" fill="#d9f2ea"/>
+  <text x="608" y="466" class="frameTab">loop 대표·연관</text>
+  <text x="752" y="490" class="msg">관련도 설명 생성 <tspan class="msgMono">relevance_summary</tspan></text>
+  <path d="M625,498 L878,498" class="call"/>
+
+  <text x="492" y="540" class="msg">SearchMatched (대표/연관 + 관련도 설명)</text>
+  <path d="M625,548 L362,548" class="ret"/>
+
+  <text x="492" y="580" class="msg">GET /result/{result_id}/excel</text>
+  <path d="M360,588 L623,588" class="call"/>
+
+  <text x="492" y="620" class="msg">xlsx (최대 9시트)</text>
+  <path d="M625,628 L362,628" class="ret"/>
+
+  <!-- 실패 경로 note -->
+  <rect x="240" y="660" width="920" height="30" rx="8" class="noteBox"/>
+  <text x="700" y="680" class="note">※ 정확 매칭 실패 시 → 벡터 유사 키워드 Top-3 제안 → 사용자 선택 (POST /search/select) → 이후 경로 동일</text>
+</svg>

@@ -58,9 +58,9 @@ def test_exact_match_returns_matched(tmp_path: Path) -> None:
     assert result.primary_paper.paper_id == 10
     assert result.related_paper is not None
     assert result.related_paper.paper_id == 30
-    # 대표 논문(10, section_name="Introduction") 섹션이 먼저, 연관 논문(30,
-    # section_name="Related") 섹션이 뒤에 이어붙어야 한다(등장 순서 보존).
-    assert result.available_sections == ["Introduction", "Related"]
+    # 대표(10)와 연관(30) 논문은 섹션 구성이 다른 별개 논문이라 독립적으로 노출된다.
+    assert result.primary_available_sections == ["Introduction"]
+    assert result.related_available_sections == ["Related"]
 
 
 def test_resolve_include_abstract_false_blanks_abstract_and_bypasses_cache(
@@ -318,7 +318,7 @@ def test_resolve_default_view_uses_cache_and_skips_scoring(tmp_path: Path) -> No
 
 
 def test_resolve_section_query_bypasses_cache_even_if_present(tmp_path: Path) -> None:
-    """section_query가 있으면 캐시가 있어도 쓰지 않고 새로 계산해야 한다."""
+    """primary_section_query가 있으면 캐시가 있어도 쓰지 않고 새로 계산해야 한다."""
     repo = _repo()
     repo.keyword_result_cache[1] = CachedKeywordResult(
         result_id="r-cached-0001",
@@ -331,7 +331,7 @@ def test_resolve_section_query_bypasses_cache_even_if_present(tmp_path: Path) ->
     service = SearchService(repo, RaisingLLM(), StaticEmbeddingClient(), _settings(tmp_path))
 
     result = service.resolve(
-        1, "RAG 관련 논문", "exact", matched_keyword="RAG", section_query=["실험"]
+        1, "RAG 관련 논문", "exact", matched_keyword="RAG", primary_section_query=["실험"]
     )
 
     assert result.result_id != "r-cached-0001"

@@ -320,7 +320,8 @@ def _render_search(st: Any, client: ApiClient) -> None:
         st.session_state["query"] = query
         # 첫 검색은 항상 기본 구성(전체 포함, 섹션 필터 없음)으로 실행한다.
         # 산출물을 좁히는 건 결과를 본 뒤 _render_output_options의 몫이다.
-        st.session_state["section_query"] = None
+        st.session_state["primary_section_query"] = None
+        st.session_state["related_section_query"] = None
         st.session_state["include_related"] = True
         st.session_state["include_tables"] = True
         st.session_state["include_abstract"] = True
@@ -332,7 +333,8 @@ def _render_search(st: Any, client: ApiClient) -> None:
                 st,
                 client,
                 query,
-                section_query=None,
+                primary_section_query=None,
+                related_section_query=None,
                 include_related=True,
                 include_tables=True,
                 include_abstract=True,
@@ -798,7 +800,8 @@ def _ensure_state(st: Any) -> None:
     """
     defaults = {
         "query": "",
-        "section_query": None,
+        "primary_section_query": None,
+        "related_section_query": None,
         "include_related": True,
         "include_tables": True,
         "include_abstract": True,
@@ -820,7 +823,8 @@ def _run_search(
     client: ApiClient,
     query: str,
     *,
-    section_query: list[str] | None = None,
+    primary_section_query: list[str] | None = None,
+    related_section_query: list[str] | None = None,
     include_related: bool = True,
     include_tables: bool = True,
     include_abstract: bool = True,
@@ -831,8 +835,8 @@ def _run_search(
     `SearchSuggest`)면 제안을 세션에 저장한다(`_set_suggestion`). 실제 렌더링은 이 함수가
     아니라 `_render_search`가 세션 상태를 읽어서 수행한다. 옵션 인자는 그대로
     `client.search`에 전달된다. 결과 화면의 "결과물 구성"(`_render_output_options`)도
-    같은 함수를 재사용해 include_related/include_tables/include_abstract/section_query만
-    바꿔 다시 호출한다.
+    같은 함수를 재사용해 include_related/include_tables/include_abstract/
+    primary_section_query/related_section_query만 바꿔 다시 호출한다.
     """
     normalized_query = query.strip()
     if not normalized_query:
@@ -842,7 +846,8 @@ def _run_search(
     try:
         response = client.search(
             normalized_query,
-            section_query=section_query,
+            primary_section_query=primary_section_query,
+            related_section_query=related_section_query,
             include_related=include_related,
             include_tables=include_tables,
             include_abstract=include_abstract,
@@ -936,24 +941,80 @@ _ABSTRACT_OPTION = "초록"
 _NO_SECTION_SENTINEL = "__섹션_없음__"
 
 
+def _render_section_selector(
+    st: Any,
+    *,
+    label: str,
+    available_sections: list[str],
+    previous_query: list[str] | None,
+    previous_abstract: bool,
+    include_abstract_option: bool,
+) -> tuple[list[str] | None, bool]:
+    """섹션 멀티셀렉트 하나를 그려 (section_query, include_abstract)를 반환한다.
+
+    대표/연관 논문은 서로 다른 논문이라 section_name 구성이 전혀 다를 수 있는데,
+    둘을 하나의 멀티셀렉트로 합쳐 놓으면 "이 섹션이 어느 논문 것인지" 헷갈리고
+    한쪽에만 있는 섹션을 고르면 다른 쪽 단락이 조용히 0건이 되는 문제가 있었다 —
+    그래서 대표/연관용으로 이 함수를 따로 호출해 완전히 독립된 두 위젯(다른
+    label, 다른 옵션 목록)으로 그린다. include_abstract_option=True(대표 논문
+    쪽에서만 사용)면 "초록" 의사 옵션을 목록 맨 앞에 추가해 초록 포함 여부까지
+    같은 위젯에서 고르게 한다(초록은 현재 대표/연관 공통 include_abstract 값
+    하나로만 제어되므로 연관 쪽엔 이 옵션을 넣지 않는다 — 두 번 표시하면 어느
+    쪽이 우선인지 헷갈린다). "초록"만 고르고 실제 섹션은 하나도 안 고르면 단락은
+    전부 빼고 초록만 남겨야 하는데, section_query가 빈 리스트(필터 없음)와
+    구분이 안 되므로 _NO_SECTION_SENTINEL로 "매칭되는 섹션 없음"을 명시적으로
+    표현한다.
+    """
+    options = [_ABSTRACT_OPTION, *available_sections] if include_abstract_option else list(available_sections)
+
+    if previous_query is None:
+        current = []
+    elif previous_query == [_NO_SECTION_SENTINEL]:
+        current = [_ABSTRACT_OPTION] if (include_abstract_option and previous_abstract) else []
+    else:
+        real = [name for name in previous_query if name in available_sections]
+        current = ([_ABSTRACT_OPTION] if (include_abstract_option and previous_abstract) else []) + real
+
+    chosen = st.multiselect(
+        label,
+        options,
+        default=current,
+        help=(
+            "'초록'과 이 논문에 실제로 있는 섹션 제목 중 하나 이상을 골라 결과·엑셀에 포함할 내용을 좁힙니다. 아무것도 안 고르면 전체 보기(모든 섹션 + 초록)입니다."
+            if include_abstract_option
+            else "이 논문에 실제로 있는 섹션 제목 중 하나 이상을 골라 결과·엑셀 단락을 좁힙니다. 아무것도 안 고르면 전체 보기입니다."
+        ),
+    )
+
+    if include_abstract_option:
+        include_abstract = not chosen or _ABSTRACT_OPTION in chosen
+        real_sections = [name for name in chosen if name != _ABSTRACT_OPTION]
+    else:
+        include_abstract = previous_abstract
+        real_sections = list(chosen)
+
+    if not chosen:
+        section_query: list[str] | None = None
+    elif real_sections:
+        section_query = real_sections
+    else:
+        section_query = [_NO_SECTION_SENTINEL]
+
+    return section_query, include_abstract
+
+
 def _render_output_options(st: Any, client: ApiClient, result: SearchMatched) -> None:
     """검색이 아니라 "찾은 결과를 엑셀에 어떻게 담을지"를 정하는 산출물 옵션을 그린다.
 
-    연관 논문 포함/표 포함/섹션(+초록) 선택 세 가지는 전부 이미 확정된 검색
-    결과에서 무엇을 보여줄지만 좁히는 것이라(대표/연관 논문 선정 자체에는
-    영향 없음), 검색 폼이 아니라 결과 화면에 둔다.
-
-    초록은 예전엔 별도 체크박스(include_abstract)였지만, 지금은 섹션 선택
-    멀티셀렉트 안에 "초록"이라는 항목으로 합쳐 넣었다 — 논문 구조를 "섹션들 +
-    초록"으로 통일해서 보여주는 게 더 직관적이라는 판단. 섹션 선택지
-    (`result.available_sections`)는 이 논문에 실제로 존재하는 section_name을
-    문서 등장 순서로 합친 목록이라 자유 텍스트 입력 없이 바로 고를 수 있고,
-    "초록"을 포함해 여러 개를 동시에 골라 결과·엑셀 내용을 그 조합으로 좁힐 수
-    있다(비워두면 전체 보기 = 모든 섹션 + 초록). 초록만 고르고 실제 섹션은 하나도
-    안 고르면 단락은 전부 빼고 초록만 남겨야 하는데, section_query가 빈 리스트
-    (필터 없음)와 구분이 안 되므로 _NO_SECTION_SENTINEL로 "매칭되는 섹션 없음"을
-    명시적으로 표현한다. "적용"을 누르면 직전과 같은 질의(`query`)를 유지한 채
-    이 옵션들만 바꿔 `_run_search`를 다시 호출해 결과(및 엑셀)를 재구성한다.
+    연관 논문 포함/표 포함/섹션(+초록) 선택은 전부 이미 확정된 검색 결과에서
+    무엇을 보여줄지만 좁히는 것이라(대표/연관 논문 선정 자체에는 영향 없음),
+    검색 폼이 아니라 결과 화면에 둔다. 대표/연관 논문은 섹션 제목 구성이 서로
+    다른 별개 논문이라 섹션 선택을 완전히 독립된 위젯 두 개로 나눈다
+    (`_render_section_selector` 참고) — 대표 논문 쪽에만 "초록" 의사 옵션이
+    있다. 연관 논문 위젯은 `result.related_paper`가 있을 때만 그린다(연관 논문을
+    아예 안 쓰기로 했으면 고를 섹션 자체가 없다). "적용"을 누르면 직전과 같은
+    질의(`query`)를 유지한 채 이 옵션들만 바꿔 `_run_search`를 다시 호출해
+    결과(및 엑셀)를 재구성한다.
     """
     st.subheader("결과물 구성")
 
@@ -970,30 +1031,25 @@ def _render_output_options(st: Any, client: ApiClient, result: SearchMatched) ->
             help="끄면 표 조회를 생략하고 엑셀에 표 데이터/표 셀 시트를 만들지 않습니다.",
         )
 
-        previous_query = st.session_state.get("section_query")
-        previous_abstract = st.session_state.get("include_abstract", True)
-        if previous_query is None:
-            current = []
-        elif previous_query == [_NO_SECTION_SENTINEL]:
-            current = [_ABSTRACT_OPTION] if previous_abstract else []
-        else:
-            real = [name for name in previous_query if name in result.available_sections]
-            current = ([_ABSTRACT_OPTION] if previous_abstract else []) + real
-
-        chosen = st.multiselect(
-            "포함할 섹션(초록 포함)",
-            [_ABSTRACT_OPTION, *result.available_sections],
-            default=current,
-            help="'초록'과 이 논문에 실제로 있는 섹션 제목 중 하나 이상을 골라 결과·엑셀에 포함할 내용을 좁힙니다. 아무것도 안 고르면 전체 보기(모든 섹션 + 초록)입니다.",
+        primary_section_query, include_abstract = _render_section_selector(
+            st,
+            label="대표 논문에 포함할 섹션(초록 포함)",
+            available_sections=result.primary_available_sections,
+            previous_query=st.session_state.get("primary_section_query"),
+            previous_abstract=st.session_state.get("include_abstract", True),
+            include_abstract_option=True,
         )
-        include_abstract = not chosen or _ABSTRACT_OPTION in chosen
-        real_sections = [name for name in chosen if name != _ABSTRACT_OPTION]
-        if not chosen:
-            section_query: list[str] | None = None
-        elif real_sections:
-            section_query = real_sections
-        else:
-            section_query = [_NO_SECTION_SENTINEL]
+
+        related_section_query: list[str] | None = None
+        if result.related_paper is not None:
+            related_section_query, _ = _render_section_selector(
+                st,
+                label="연관 논문에 포함할 섹션",
+                available_sections=result.related_available_sections,
+                previous_query=st.session_state.get("related_section_query"),
+                previous_abstract=True,
+                include_abstract_option=False,
+            )
 
         applied = st.form_submit_button("이 구성으로 다시 만들기")
 
@@ -1001,13 +1057,15 @@ def _render_output_options(st: Any, client: ApiClient, result: SearchMatched) ->
         st.session_state["include_related"] = include_related
         st.session_state["include_tables"] = include_tables
         st.session_state["include_abstract"] = include_abstract
-        st.session_state["section_query"] = section_query
+        st.session_state["primary_section_query"] = primary_section_query
+        st.session_state["related_section_query"] = related_section_query
         with st.spinner("선택한 구성으로 결과를 다시 만들고 있습니다..."):
             _run_search(
                 st,
                 client,
                 st.session_state["query"],
-                section_query=section_query,
+                primary_section_query=primary_section_query,
+                related_section_query=related_section_query,
                 include_related=include_related,
                 include_tables=include_tables,
                 include_abstract=include_abstract,

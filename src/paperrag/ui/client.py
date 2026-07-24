@@ -55,7 +55,8 @@ class ApiClient:
         self,
         query: str,
         *,
-        section_query: list[str] | None = None,
+        primary_section_query: list[str] | None = None,
+        related_section_query: list[str] | None = None,
         include_related: bool = True,
         include_tables: bool = True,
         include_abstract: bool = True,
@@ -70,19 +71,23 @@ class ApiClient:
 
         키워드 추출은 항상 LLM(Ollama)으로 이뤄진다(직렬 처리라 지연이 있음 —
         `docs/reports/assessments/2026-07-22-llm-search-capacity.md` 참고).
-        section_query를 주면 결과 단락을 그 목록 중 하나라도 포함하는 섹션명만으로
-        좁힌다(응답의 `available_sections`가 실제 존재하는 섹션 제목 목록이므로, 다음
-        호출의 section_query는 그 목록에서 여러 개 골라 넣는 것을 가정한다). include_related=False면
-        연관 논문 관련 항목·시트를, include_tables=False면 표 관련 시트를,
-        include_abstract=False면 논문 정보 시트의 초록 칸을 아예 만들지/채우지 않는다
-        (셋 다 기본은 True — 산출물 구성을 사용자가 좁히는 옵션).
+        primary_section_query/related_section_query를 주면 각각 대표/연관 논문의
+        결과 단락을 그 목록 중 하나라도 포함하는 섹션명만으로 독립적으로 좁힌다
+        (응답의 `primary_available_sections`/`related_available_sections`가 각
+        논문에 실제 존재하는 섹션 제목 목록이므로, 다음 호출엔 그 목록에서 여러 개
+        골라 넣는 것을 가정한다 — 대표/연관은 서로 다른 논문이라 섹션 제목 구성이
+        다르므로 하나로 합치지 않는다). include_related=False면 연관 논문 관련
+        항목·시트를, include_tables=False면 표 관련 시트를, include_abstract=False면
+        논문 정보 시트의 초록 칸을 아예 만들지/채우지 않는다(셋 다 기본은 True —
+        산출물 구성을 사용자가 좁히는 옵션).
         """
         response = self._request(
             "POST",
             "/search",
             json={
                 "query": query,
-                "section_query": section_query,
+                "primary_section_query": primary_section_query,
+                "related_section_query": related_section_query,
                 "include_related": include_related,
                 "include_tables": include_tables,
                 "include_abstract": include_abstract,

@@ -17,18 +17,23 @@ class SearchRequest(BaseModel):
 
     query 외 나머지 필드는 전부 선택값이다. 질의 키워드 추출은 항상 LLM(Ollama)로
     이뤄진다 — 형태소 분석 빠른 경로는 사용자가 고르는 옵션이 아니라 LLM 실패
-    시의 내부 안전망일 뿐이다(SearchService.extract_keywords 참고). section_query를
-    지정하면 결과(엑셀 포함) 단락을 그 목록의 이름 중 하나라도 포함하는
-    section_name으로만 좁힌다(여러 섹션 동시 선택 가능).
+    시의 내부 안전망일 뿐이다(SearchService.extract_keywords 참고).
+    primary_section_query/related_section_query를 지정하면 각각 대표/연관 논문의
+    결과(엑셀 포함) 단락을 그 목록의 이름 중 하나라도 포함하는 section_name으로만
+    좁힌다(여러 섹션 동시 선택 가능). 대표/연관 논문은 섹션 제목 구성이 서로 달라서
+    (다른 논문이므로) 하나로 합친 목록에 같이 고르게 하면 "이 섹션은 어느 논문
+    것인지" 헷갈리고, 한쪽에만 있는 섹션을 고르면 다른 쪽 단락이 조용히 0건이 되는
+    문제가 있어 처음부터 두 논문을 독립적으로 필터링하도록 분리했다.
     include_related=False면 연관 논문 조회 자체를 생략하고 응답·엑셀에서
-    연관 논문 관련 항목을 전부 제외한다. include_tables=False면 표 조회를
-    생략하고 엑셀에 표 시트를 만들지 않는다. include_abstract=False면
-    대표/연관 논문 정보 시트에서 초록 원문·초록 요약 칸을 비운다 — 셋 다
-    "필요 없는 산출물은 아예 만들지 않는다"는 사용자 맞춤 구성을 위한 것이다.
+    연관 논문 관련 항목을 전부 제외한다(이 경우 related_section_query는 무시된다).
+    include_tables=False면 표 조회를 생략하고 엑셀에 표 시트를 만들지 않는다.
+    include_abstract=False면 대표/연관 논문 정보 시트에서 초록 원문·초록 요약 칸을
+    비운다 — 다 "필요 없는 산출물은 아예 만들지 않는다"는 사용자 맞춤 구성을 위한 것이다.
     """
 
     query: str = Field(min_length=1)
-    section_query: list[str] | None = None
+    primary_section_query: list[str] | None = None
+    related_section_query: list[str] | None = None
     include_related: bool = True
     include_tables: bool = True
     include_abstract: bool = True
@@ -74,11 +79,13 @@ class SearchMatched(BaseModel):
 
     match_type으로 "정확 매칭(exact)"인지 "유사 키워드 선택 후 확정(selected)"인지
     구분하고, result_id는 이후 GET /result/{result_id}/excel 다운로드에 사용한다.
-    available_sections는 대표(+연관) 논문에 실제로 존재하는 section_name을
-    문서 등장 순서로 중복 없이 합친 목록이다 — 사용자가 다음 검색에서
-    section_query를 자유 텍스트가 아니라 이 목록에서 골라 넣을 수 있게 하기 위한
-    것으로, 대표 논문 선정 결과 자체와는 무관하다(현재 산출물 구성 기준으로
-    "어떤 섹션이 있는지"만 알려준다).
+    primary_available_sections/related_available_sections는 각각 대표/연관
+    논문에 실제로 존재하는 section_name을 문서 등장 순서로 중복 없이 나열한
+    목록이다 — 사용자가 다음 검색에서 primary_section_query/related_section_query를
+    자유 텍스트가 아니라 이 목록에서 골라 넣을 수 있게 하기 위한 것으로, 대표 논문
+    선정 결과 자체와는 무관하다(현재 산출물 구성 기준으로 "어떤 섹션이 있는지"만
+    알려준다). 두 논문의 섹션 제목을 하나로 합치지 않는 이유는 SearchRequest
+    docstring 참고.
     """
 
     status: Literal["matched"] = "matched"
@@ -89,7 +96,8 @@ class SearchMatched(BaseModel):
     result_id: str
     primary_paper: PaperSummary
     related_paper: PaperSummary | None = None
-    available_sections: list[str] = Field(default_factory=list)
+    primary_available_sections: list[str] = Field(default_factory=list)
+    related_available_sections: list[str] = Field(default_factory=list)
 
 
 class SearchSuggest(BaseModel):

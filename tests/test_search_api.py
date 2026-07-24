@@ -146,7 +146,11 @@ def test_search_matched_and_excel_download(
 def test_search_response_exposes_available_sections_and_accepts_include_abstract(
     client_with_service: tuple[TestClient, SearchService],
 ) -> None:
-    """UI가 자유 텍스트 대신 드롭다운을 채울 수 있도록 실제 섹션 목록이 응답에 담겨야 한다."""
+    """UI가 자유 텍스트 대신 드롭다운을 채울 수 있도록 대표/연관 논문의 실제 섹션
+
+    목록이 각각 독립적으로 응답에 담겨야 한다(두 논문은 섹션 구성이 다른 별개
+    논문이므로 하나로 합치지 않는다).
+    """
     client, _ = client_with_service
 
     response = client.post(
@@ -156,7 +160,8 @@ def test_search_response_exposes_available_sections_and_accepts_include_abstract
 
     assert response.status_code == 200
     body = response.json()
-    assert body["available_sections"] == ["Intro", "Related"]
+    assert body["primary_available_sections"] == ["Intro"]
+    assert body["related_available_sections"] == ["Related"]
 
 
 def test_search_suggest_and_select(client_with_service: tuple[TestClient, SearchService]) -> None:

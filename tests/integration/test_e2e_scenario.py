@@ -340,7 +340,7 @@ def test_section_query_filters_paragraph_sheet_against_real_postgres(
     e2e_context: E2EContext,
     search_service: SearchService,
 ) -> None:
-    """section_query가 실제 Postgres에서 ILIKE OR 결합으로 올바르게 단락을 좁히는지 확인한다.
+    """primary_section_query가 실제 Postgres에서 ILIKE OR 결합으로 올바르게 단락을 좁히는지 확인한다.
 
     (InMemorySearchRepository만으로는 잡을 수 없었던 PostgresSearchRepository의
     AmbiguousParameter 타입 캐스팅 버그를 이 테스트가 실제로 발견했다 — 회귀 방지용.
@@ -356,17 +356,17 @@ def test_section_query_filters_paragraph_sheet_against_real_postgres(
     # SimpleTextLayerBackend는 section_header 블록 타입을 만들지 않으므로, 이 픽스처의
     # 모든 논문 단락은 paragraphs.build_paragraphs의 기본 섹션명("본문") 그대로 저장된다.
     # 부분 일치 필터를 걸어도 전량이 그대로 남아야 한다.
-    matching = search_service.search(query, section_query=["본문"])
+    matching = search_service.search(query, primary_section_query=["본문"])
     assert isinstance(matching, SearchMatched)
     assert _paragraph_row_count(search_service, matching.result_id) == unfiltered_rows
 
     # 여러 이름 중 하나만 실제로 존재해도(OR 결합) 전량이 그대로 남아야 한다.
-    multi = search_service.search(query, section_query=["이런섹션은없다", "본문"])
+    multi = search_service.search(query, primary_section_query=["이런섹션은없다", "본문"])
     assert isinstance(multi, SearchMatched)
     assert _paragraph_row_count(search_service, multi.result_id) == unfiltered_rows
 
     # 존재하지 않는 섹션으로만 필터하면 헤더 행만 남아야 한다.
-    empty = search_service.search(query, section_query=["이런섹션은없다"])
+    empty = search_service.search(query, primary_section_query=["이런섹션은없다"])
     assert isinstance(empty, SearchMatched)
     assert _paragraph_row_count(search_service, empty.result_id) == 1
 

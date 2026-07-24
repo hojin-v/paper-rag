@@ -13,7 +13,8 @@ def test_search_parses_matched_response() -> None:
         assert request.url.path == "/search"
         assert json.loads(request.content) == {
             "query": "RAG 논문",
-            "section_query": None,
+            "primary_section_query": None,
+            "related_section_query": None,
             "include_related": True,
             "include_tables": True,
             "include_abstract": True,
